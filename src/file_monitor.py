@@ -155,7 +155,6 @@ class FileMonitor:
             # Fallback: try matching directory name as a username
             if user_id is None and item.name in self._username_to_id:
                 user_id = self._username_to_id[item.name]
-                self.logger.info(f"Matched directory '{item.name}' to username, user ID {user_id}")
             if user_id and user_id in self._valid_users:
                 self._scan_directory_for_user(item, user_id)
                 self._scan_tag_subdirectories(item, user_id)
