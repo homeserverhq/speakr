@@ -1,23 +1,9 @@
-name: Docker Build and Publish
+name: Build and Publish Docker Image
 
-# Publishing is owned by this GitHub workflow. It builds and pushes the
-# multi-arch images to Docker Hub when a GitHub Release is published, on public
-# runners with auditable build logs and provenance attestation. Building images
-# on public CI rather than a private runner lets anyone verify exactly how a
-# published image was produced and from which commit. The Forgejo
-# docker-publish workflow is kept as a manual fallback only (workflow_dispatch),
-# so the same tag is never published twice. To hand CD back to Forgejo, restore
-# its `push: tags` trigger and comment out the `release` trigger below.
 on:
-  release:
-    types: [published]
-  workflow_dispatch:
-
-env:
-  # Use docker.io for Docker Hub if empty
-  REGISTRY: docker.io
-  # Use explicit image name instead of github.repository
-  IMAGE_NAME: learnedmachine/speakr
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   test:
@@ -47,16 +33,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install ffmpeg (needed by stitch / ffprobe tests)
+      - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Install dependencies
         run: pip install -r requirements.txt pytest pytest-cov
 
-      - name: Run full test suite (gates the release)
+      - name: Run full test suite
         env:
-          # App tests run on an isolated SQLite DB (conftest.py);
-          # test_postgres_migrations reads TEST_DATABASE_URI for real PG.
           TEST_DATABASE_URI: postgresql://speakr:speakr@localhost:5432/speakr_test
         run: pytest tests/ -q --cov=src --cov-report=term-missing --cov-fail-under=54
 
@@ -66,58 +50,40 @@ jobs:
     permissions:
       contents: read
       packages: write
-      # This is used to complete the identity challenge
-      # with sigstore/fulcio when running outside of PRs.
-      id-token: write
 
     steps:
-      # Free up disk space on the runner (~30GB)
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
-          sudo docker image prune -af
-          df -h /
-
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      # Set up QEMU for multi-platform builds
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      # Set up Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Login to Docker Hub
-      - name: Log into registry ${{ env.REGISTRY }}
-        if: github.event_name != 'pull_request'
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Extract metadata (tags, labels) for Docker
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ghcr.io/${{ github.repository }}
           tags: |
-            type=match,pattern=v(.*),group=1
-            type=sha
-            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' || github.event_name == 'release' }}
+            type=ref,event=tag
+            type=raw,value=latest
 
-      # Build and push full Docker image
       - name: Build and push Docker image
-        id: build-and-push
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:latest
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -130,62 +96,41 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
 
     steps:
-      # Free up disk space on the runner (~30GB)
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
-          sudo docker image prune -af
-          df -h /
-
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      # Set up QEMU for multi-platform builds
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      # Set up Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Login to Docker Hub
-      - name: Log into registry ${{ env.REGISTRY }}
-        if: github.event_name != 'pull_request'
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Extract metadata for lite image
       - name: Extract Docker metadata (lite)
         id: meta-lite
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # Never tag the lite image as `latest`; `latest` is the full image,
-          # set only by the build job above. Without this, metadata-action's
-          # default `latest=auto` makes the lite job also push `latest`, and
-          # since it runs last it clobbers the full image's `latest`.
+          images: ghcr.io/${{ github.repository }}
           flavor: |
             latest=false
           tags: |
-            type=raw,value=lite,enable=${{ github.event_name == 'workflow_dispatch' || github.event_name == 'release' }}
-            type=match,pattern=v(.*),group=1,suffix=-lite
-            type=sha,suffix=-lite
+            type=raw,value=lite,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+            type=ref,event=tag,suffix=-lite
 
-      # Build and push lightweight Docker image (no PyTorch/sentence-transformers)
       - name: Build and push lite Docker image
-        id: build-and-push-lite
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta-lite.outputs.tags }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:lite
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}-lite
           labels: ${{ steps.meta-lite.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

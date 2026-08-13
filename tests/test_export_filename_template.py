@@ -86,6 +86,7 @@ def _export_env():
     try:
         with patch.object(file_exporter, "ENABLE_AUTO_EXPORT", True), \
              patch.object(file_exporter, "AUTO_EXPORT_DIR", tmpdir), \
+             patch.object(file_exporter, "AUTO_CONSUME_DIR", os.path.join(tmpdir, "consume")), \
              patch.object(file_exporter, "AUTO_EXPORT_TRANSCRIPTION", True), \
              patch.object(file_exporter, "AUTO_EXPORT_SUMMARY", True):
             yield tmpdir
