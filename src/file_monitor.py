@@ -145,13 +145,17 @@ class FileMonitor:
         if not self.base_watch_directory.exists():
             return
 
-        # Look for user directories (e.g., user123, user456)
+        # Look for user directories (e.g., user123, 42, or by username)
         for item in self.base_watch_directory.iterdir():
             if not item.is_dir():
                 continue
 
             # Extract user ID from directory name
             user_id = self._extract_user_id_from_dirname(item.name)
+            # Fallback: try matching directory name as a username
+            if user_id is None and item.name in self._username_to_id:
+                user_id = self._username_to_id[item.name]
+                self.logger.info(f"Matched directory '{item.name}' to username, user ID {user_id}")
             if user_id and user_id in self._valid_users:
                 self._scan_directory_for_user(item, user_id)
                 self._scan_tag_subdirectories(item, user_id)
@@ -172,6 +176,12 @@ class FileMonitor:
         else:
             self.logger.warning(f"Configured default username '{default_username}' is not valid")
 
+    def _is_user_directory(self, dirname):
+        """Check if a directory name corresponds to a user directory."""
+        if self._extract_user_id_from_dirname(dirname) is not None:
+            return True
+        return dirname in self._username_to_id
+
     def _scan_tag_subdirectories(self, directory, user_id):
         """Scan subdirectories that match auto-process tag folders."""
         if not directory.exists():
@@ -185,8 +195,8 @@ class FileMonitor:
                 if not item.is_dir():
                     continue
 
-                # Skip hidden dirs and user directories (e.g., user123)
-                if item.name.startswith('.') or self._extract_user_id_from_dirname(item.name) is not None:
+                # Skip hidden dirs and user directories (e.g., user123, or username dirs)
+                if item.name.startswith('.') or self._is_user_directory(item.name):
                     continue
 
                 # Look up matching auto-process tag
