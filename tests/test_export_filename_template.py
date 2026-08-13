@@ -242,11 +242,10 @@ def test_mark_export_as_deleted_uses_stored_name():
         db.session.delete(rec)
         db.session.commit()
 
-        new_path = mark_export_as_deleted(rec_id)
-        assert new_path is not None
-        assert os.path.basename(new_path) == "[deleted]_Board Meeting.md"
-        assert os.path.exists(new_path)
-        assert not os.path.exists(os.path.join(udir, "Board Meeting.md"))
+        deleted_path = mark_export_as_deleted(rec_id)
+        assert deleted_path is not None
+        assert os.path.basename(deleted_path) == "Board Meeting.md"
+        assert not os.path.exists(deleted_path)
 
 
 def test_mark_export_as_deleted_legacy_fallback():
@@ -263,9 +262,10 @@ def test_mark_export_as_deleted_legacy_fallback():
         db.session.delete(rec)
         db.session.commit()
 
-        new_path = mark_export_as_deleted(rec_id)
-        assert new_path is not None
-        assert os.path.basename(new_path) == f"[deleted]_recording_{rec_id}.md"
+        deleted_path = mark_export_as_deleted(rec_id)
+        assert deleted_path is not None
+        assert os.path.basename(deleted_path) == f"recording_{rec_id}.md"
+        assert not os.path.exists(deleted_path)
 
 
 # --------------------------------------------------------------------------- #

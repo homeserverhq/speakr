@@ -20,6 +20,7 @@ ENABLE_AUTO_EXPORT = os.environ.get('ENABLE_AUTO_EXPORT', 'false').lower() == 't
 AUTO_EXPORT_DIR = os.environ.get('AUTO_EXPORT_DIR', '/data/exports')
 AUTO_EXPORT_TRANSCRIPTION = os.environ.get('AUTO_EXPORT_TRANSCRIPTION', 'true').lower() == 'true'
 AUTO_EXPORT_SUMMARY = os.environ.get('AUTO_EXPORT_SUMMARY', 'true').lower() == 'true'
+AUTO_CONSUME_DIR = os.environ.get('AUTO_CONSUME_DIR', '/data/consume')
 
 # Setup logging
 logger = logging.getLogger('file_exporter')
@@ -116,11 +117,16 @@ def format_transcription_with_template(transcription_text, user):
 def get_export_directory(user):
     """Get the export directory for a user, creating if needed."""
     base_dir = Path(AUTO_EXPORT_DIR)
-
     # Create per-user subdirectory based on username
     user_dir = base_dir / secure_filename(user.username)
     user_dir.mkdir(parents=True, exist_ok=True)
+    return user_dir
 
+def get_consume_directory(user):
+    """Get the consume directory for a user, creating if needed."""
+    base_dir = Path(AUTO_CONSUME_DIR)
+    user_dir = base_dir / secure_filename(user.username)
+    user_dir.mkdir(parents=True, exist_ok=True)
     return user_dir
 
 
@@ -241,7 +247,7 @@ def get_export_filepath(user, recording):
 # The delete endpoint removes the Recording row BEFORE calling
 # mark_export_as_deleted(), so with custom filenames the stored name can no
 # longer be read from the database at that point. This ORM listener captures
-# (user_id, export_filename) at delete time so the rename still finds the
+# (user_id, export_filename) at delete time so the deletion still finds the
 # right file. Best-effort, in-process only; the legacy "recording_{id}" scan
 # remains as fallback.
 _deleted_export_names = {}
@@ -271,7 +277,7 @@ _register_delete_listener()
 
 def mark_export_as_deleted(recording_id):
     """
-    Rename the export file to indicate the recording was deleted.
+    Delete the export file for a deleted recording.
 
     Uses the recording's stored export filename when available (from the DB
     row if it still exists, or captured at ORM delete time otherwise) and
@@ -281,7 +287,7 @@ def mark_export_as_deleted(recording_id):
         recording_id: ID of the deleted recording
 
     Returns:
-        New filepath if renamed, None otherwise
+        Path of the deleted file, or None if not found
     """
     if not ENABLE_AUTO_EXPORT:
         return None
@@ -332,10 +338,9 @@ def mark_export_as_deleted(recording_id):
                 for name in candidates:
                     old_filepath = user_dir / f"{name}.md"
                     if old_filepath.exists():
-                        new_filepath = user_dir / f"[deleted]_{name}.md"
-                        old_filepath.rename(new_filepath)
-                        logger.info(f"Marked export as deleted: {new_filepath}")
-                        return str(new_filepath)
+                        os.remove(old_filepath)
+                        logger.info(f"Deleted export file: {old_filepath}")
+                        return str(old_filepath)
 
             return None
 
@@ -713,7 +718,7 @@ def export_recording(recording_id):
     Returns:
         Path to the exported file, or None if export failed/disabled
     """
-    if not ENABLE_AUTO_EXPORT:
+    if not ENABLE_AUTO_EXPORT and not AUTO_CONSUME_DIR:
         return None
 
     # Check if we should export anything
@@ -746,26 +751,28 @@ def export_recording(recording_id):
                 logger.debug(f"Recording {recording_id} has no content to export")
                 return None
 
-            # Get export directory for user
-            export_dir = get_export_directory(user)
+            # Get directories
+            if ENABLE_AUTO_EXPORT:
+                export_dir = get_export_directory(user)
+            if AUTO_CONSUME_DIR:
+                consume_dir = get_consume_directory(user)
 
             # Render and store the filename on first export (or when NULL from
             # a legacy row that predates stored names). Once stored, the name
             # is authoritative: re-exports overwrite that same file.
             if not recording.export_filename:
                 new_name = render_export_filename(recording, user)
-                # A legacy export may already exist under "recording_{id}.md";
-                # migrate it to the new name so no orphan file is left behind.
-                legacy_file = export_dir / f"recording_{recording.id}.md"
-                if new_name != f"recording_{recording.id}" and legacy_file.exists():
-                    try:
-                        legacy_file.rename(export_dir / f"{new_name}.md")
-                    except OSError:
-                        pass
+                if ENABLE_AUTO_EXPORT:
+                    # A legacy export may already exist under "recording_{id}.md";
+                    # migrate it to the new name so no orphan file is left behind.
+                    legacy_file = export_dir / f"recording_{recording.id}.md"
+                    if new_name != f"recording_{recording.id}" and legacy_file.exists():
+                        try:
+                            legacy_file.rename(export_dir / f"{new_name}.md")
+                        except OSError:
+                            pass
                 recording.export_filename = new_name
                 db.session.commit()
-
-            filepath = export_dir / f"{recording.export_filename}.md"
 
             # Generate content
             content = generate_markdown_content(
@@ -775,11 +782,20 @@ def export_recording(recording_id):
                 include_summary=AUTO_EXPORT_SUMMARY
             )
 
-            # Write to file (overwrites if exists)
-            filepath.write_text(content, encoding='utf-8')
+            filepath = None
+            if ENABLE_AUTO_EXPORT:
+                filepath = export_dir / f"{recording.export_filename}.md"
+                filepath.write_text(content, encoding='utf-8')
+                logger.info(f"Exported recording {recording_id} to {filepath}")
 
-            logger.info(f"Exported recording {recording_id} to {filepath}")
-            return str(filepath)
+            if AUTO_CONSUME_DIR:
+                consume_filepath = consume_dir / f"{recording.export_filename}.md"
+                consume_filepath.write_text(content, encoding='utf-8')
+                logger.info(f"Exported recording {recording_id} to consume dir {consume_filepath}")
+
+            if ENABLE_AUTO_EXPORT:
+                return str(filepath)
+            return None
 
         except Exception as e:
             logger.error(f"Failed to export recording {recording_id}: {e}")
@@ -787,23 +803,36 @@ def export_recording(recording_id):
 
 
 def initialize_export_directory():
-    """Initialize the export directory on startup."""
-    if not ENABLE_AUTO_EXPORT:
+    """Initialize the export and/or consume directory on startup."""
+    if not ENABLE_AUTO_EXPORT and not AUTO_CONSUME_DIR:
         return
 
     try:
-        export_dir = Path(AUTO_EXPORT_DIR)
-        export_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Auto-export enabled, directory: {AUTO_EXPORT_DIR}")
+        if ENABLE_AUTO_EXPORT:
+            export_dir = Path(AUTO_EXPORT_DIR)
+            export_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Auto-export enabled, directory: {AUTO_EXPORT_DIR}")
+            if AUTO_EXPORT_TRANSCRIPTION and AUTO_EXPORT_SUMMARY:
+                logger.info("Exporting: transcription and summary")
+            elif AUTO_EXPORT_TRANSCRIPTION:
+                logger.info("Exporting: transcription only")
+            elif AUTO_EXPORT_SUMMARY:
+                logger.info("Exporting: summary only")
+            else:
+                logger.warning("Auto-export enabled but no content types selected")
 
-        if AUTO_EXPORT_TRANSCRIPTION and AUTO_EXPORT_SUMMARY:
-            logger.info("Exporting: transcription and summary")
-        elif AUTO_EXPORT_TRANSCRIPTION:
-            logger.info("Exporting: transcription only")
-        elif AUTO_EXPORT_SUMMARY:
-            logger.info("Exporting: summary only")
-        else:
-            logger.warning("Auto-export enabled but no content types selected")
+        if AUTO_CONSUME_DIR:
+            consume_dir = Path(AUTO_CONSUME_DIR)
+            consume_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Consume export enabled, directory: {AUTO_CONSUME_DIR}")
+            if AUTO_EXPORT_TRANSCRIPTION and AUTO_EXPORT_SUMMARY:
+                logger.info("Consume: transcription and summary")
+            elif AUTO_EXPORT_TRANSCRIPTION:
+                logger.info("Consume: transcription only")
+            elif AUTO_EXPORT_SUMMARY:
+                logger.info("Consume: summary only")
+            else:
+                logger.warning("Consume export enabled but no content types selected")
 
     except Exception as e:
         logger.error(f"Failed to initialize export directory: {e}")
