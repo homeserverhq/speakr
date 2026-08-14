@@ -88,7 +88,7 @@ def get_export_labels(language: str) -> dict:
         'tags': 'Tags',
         'transcriptionTime': 'Transcription Time',
         'summarizationTime': 'Summarization Time',
-        'footer': 'Generated with [Speakr](https://github.com/learnedmachine/speakr)'
+        'footer': 'Generated with [Speakr](https://github.com/murtaza-nasir/speakr)'
     }
 
     # Merge defaults with loaded labels

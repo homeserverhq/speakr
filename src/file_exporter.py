@@ -611,7 +611,7 @@ def generate_from_template(recording, user, template_str, labels, user_language,
     rendered = render_export_template(template_str, context, labels)
 
     # Always append hardcoded footer
-    footer = labels.get('footer', 'Generated with [Speakr](https://github.com/learnedmachine/speakr)')
+    footer = labels.get('footer', 'Generated with [Speakr](https://github.com/murtaza-nasir/speakr)')
     rendered += f"\n\n---\n\n*{footer}*\n"
 
     return rendered
@@ -701,7 +701,7 @@ def generate_default_markdown(recording, user, labels, user_language,
     # Footer
     lines.append("---")
     lines.append("")
-    footer = labels.get('footer', 'Generated with [Speakr](https://github.com/learnedmachine/speakr)')
+    footer = labels.get('footer', 'Generated with [Speakr](https://github.com/murtaza-nasir/speakr)')
     lines.append(f"*{footer}*")
     lines.append("")
 
