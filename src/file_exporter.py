@@ -187,7 +187,10 @@ def render_export_filename(recording, user):
     if not template:
         template = DEFAULT_EXPORT_FILENAME_TEMPLATE
 
-    dt = recording.meeting_date or recording.created_at
+    from src.utils.dates import to_local
+    # meeting_date is a user-supplied local calendar date; created_at is stored
+    # as naive UTC, so localize it for user-facing filename output.
+    dt = recording.meeting_date or to_local(recording.created_at)
     filename_stem = os.path.splitext(recording.original_filename)[0] if recording.original_filename else ''
 
     variables = {
@@ -585,13 +588,14 @@ def generate_from_template(recording, user, template_str, labels, user_language,
     Returns:
         Rendered markdown string
     """
-    from src.utils.localization import format_date_localized, format_datetime_localized
+    from src.utils.localization import format_date_localized
+    from src.utils.dates import format_local_iso
 
     # Build context with all available variables
     context = {
         'title': recording.title or f"Recording {recording.id}",
         'meeting_date': format_date_localized(recording.meeting_date, user_language) if recording.meeting_date else '',
-        'created_at': format_datetime_localized(recording.created_at, user_language) if recording.created_at else '',
+        'created_at': format_local_iso(recording.created_at),
         'original_filename': recording.original_filename or '',
         'file_size': format_file_size(recording.file_size) if recording.file_size else '',
         'participants': recording.participants or '',
@@ -633,7 +637,8 @@ def generate_default_markdown(recording, user, labels, user_language,
     Returns:
         Rendered markdown string
     """
-    from src.utils.localization import format_date_localized, format_datetime_localized
+    from src.utils.localization import format_date_localized
+    from src.utils.dates import format_local_iso
 
     lines = []
 
@@ -651,7 +656,7 @@ def generate_default_markdown(recording, user, labels, user_language,
         lines.append(f"- **{labels.get('date', 'Date')}:** {date_str}")
 
     if recording.created_at:
-        created_str = format_datetime_localized(recording.created_at, user_language)
+        created_str = format_local_iso(recording.created_at)
         lines.append(f"- **{labels.get('created', 'Created')}:** {created_str}")
 
     if recording.original_filename:

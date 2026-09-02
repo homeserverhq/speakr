@@ -37,7 +37,7 @@ from src.services.transcription_defaults import (
     resolve_transcription_params,
 )
 from src.tasks.processing import format_transcription_for_llm, _resolve_timestamp_template_format
-from src.utils.dates import to_utc_naive
+from src.utils.dates import to_utc_naive, format_local_iso
 from src.utils.ffmpeg_utils import FFmpegError, FFmpegNotFoundError
 from src.utils.titles import resolve_upload_title
 from src.services.speaker import update_speaker_usage
@@ -405,7 +405,7 @@ def download_summary_word(recording_id):
             return p
 
         # Add metadata
-        add_unicode_paragraph(doc, f'Uploaded: {recording.created_at.strftime("%Y-%m-%d %H:%M")}')
+        add_unicode_paragraph(doc, f'Uploaded: {format_local_iso(recording.created_at)}')
         if recording.meeting_date:
             add_unicode_paragraph(doc, f'Recording Date: {recording.meeting_date.strftime("%Y-%m-%d")}')
         if recording.participants:
@@ -522,8 +522,8 @@ def download_chat_word(recording_id):
             return p
 
         # Add metadata
-        add_unicode_paragraph(doc, f'Recording Date: {recording.created_at.strftime("%Y-%m-%d %H:%M")}')
-        add_unicode_paragraph(doc, f'Chat Export Date: {datetime.utcnow().strftime("%Y-%m-%d %H:%M")}')
+        add_unicode_paragraph(doc, f'Recording Date: {format_local_iso(recording.created_at)}')
+        add_unicode_paragraph(doc, f'Chat Export Date: {format_local_iso(datetime.utcnow())}')
         doc.add_paragraph('')  # Empty line
 
         # Add chat messages
@@ -656,7 +656,7 @@ def download_notes_word(recording_id):
             return p
 
         # Add metadata
-        add_unicode_paragraph(doc, f'Uploaded: {recording.created_at.strftime("%Y-%m-%d %H:%M")}')
+        add_unicode_paragraph(doc, f'Uploaded: {format_local_iso(recording.created_at)}')
         if recording.meeting_date:
             add_unicode_paragraph(doc, f'Recording Date: {recording.meeting_date.strftime("%Y-%m-%d")}')
         if recording.participants:
