@@ -443,7 +443,10 @@ main {
     padding-right: 6px; /* Space for scrollbar */
     min-height: 0; /* Added for robust flex scrolling */
 }
-.progress-popup { position: fixed; bottom: 1rem; left: 1rem; z-index: 100; transition: all 0.3s ease-in-out; min-width: 300px; max-width: 400px; border-radius: 12px; overflow: hidden; }
+/* z-index comes from the template's utility class (z-50; DOM-order ties
+   with sidebar/modals) — do not set one here, a higher value would let the
+   popup cover modal footers again. */
+.progress-popup { position: fixed; bottom: 1rem; left: 1rem; transition: all 0.3s ease-in-out; min-width: 300px; max-width: 400px; border-radius: 12px; overflow: hidden; }
 .progress-popup.minimized { transform: translateY(calc(100% - 45px)); }
 .progress-list-item { display: grid; grid-template-columns: auto 1fr auto; gap: 0.5rem; align-items: center; }
 .progress-list-item .truncate { 
@@ -4651,4 +4654,35 @@ select:disabled {
    extend edge-to-edge. No card chrome. */
 .recording-row {
     position: relative;
+}
+
+/* Chat timestamp chips: the recording chat cites moments as bracketed
+   transcript timestamps; they render as clickable pills (same visual
+   language as Inquire citation chips) that seek the in-view player. */
+.chat-ts-chip {
+    display: inline-block;
+    background-color: var(--bg-accent);
+    color: var(--text-accent);
+    border: 1px solid var(--border-accent, var(--border-secondary));
+    border-radius: 9999px;
+    padding: 0.14em 0.55em;
+    font-size: 0.78em;
+    /* Baseline-align the chip's own text with the surrounding sentence and
+       let the pill wrap it symmetrically. Unlike a fixed -0.35em nudge on a
+       tall inline-block (the first attempt), this stays optically in-line at
+       every bubble font size and layout. */
+    line-height: 1.1;
+    vertical-align: baseline;
+    font-family: inherit;
+    cursor: pointer;
+    margin: 0 0.1em;
+    white-space: nowrap;
+}
+.chat-ts-chip::before {
+    content: "\25B8";  /* small play triangle */
+    margin-right: 0.3em;
+    font-size: 0.9em;
+}
+.chat-ts-chip:hover {
+    border-color: var(--border-focus);
 }

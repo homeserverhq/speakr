@@ -30,6 +30,8 @@ Speakr supports multiple transcription engines to match your needs and budget. U
 
 When using the [ASR endpoint](getting-started.md#option-b-custom-asr-endpoint-configuration), Speakr automatically identifies different speakers in your recordings. If you encounter issues, check the [troubleshooting guide](troubleshooting.md#speaker-identification-not-working). Each speaker gets a unique label that you can later customize with actual names. The system remembers these speaker profiles, building a library that improves identification accuracy over time. Manage your speaker library in [account settings](user-guide/settings.md). This feature transforms multi-person meetings from walls of text into organized conversations.
 
+You can guide diarization with a speaker count. The upload, recording, and reprocess dialogs offer a Range / Exact toggle (remembered per user): Range sends a minimum and maximum, while Exact sends one number, and providers that only accept an exact count (such as OpenASR) show the single field automatically. Tag and folder defaults work with either form.
+
 **Cloud Diarization with OpenAI**: When using OpenAI's `gpt-4o-transcribe-diarize` model, speaker diarization is also available with speakers labeled as A, B, C, etc. For longer files (over ~23 minutes) that require chunking, the system maintains speaker identity across chunks using audio reference samples. This technique supports **up to 4 speakers** - recordings with more speakers may have inconsistent labels across different sections of the transcript.
 
 **Cloud Diarization with Mistral**: Mistral's Voxtral model provides built-in speaker diarization and automatic language detection. It handles chunking internally, so long files work without extra configuration.
@@ -68,6 +70,8 @@ Transform static transcripts into dynamic conversations with the integrated chat
 ### Semantic Search (Inquire Mode)
 
 Search across all your recordings using natural language questions instead of keywords through [Inquire Mode](user-guide/inquire-mode.md). The [vector store](admin-guide/vector-store.md) must be configured for this feature to work. The semantic search understands meaning and context, finding relevant content even when exact words don't match. Ask questions like "When did we discuss the budget increase?" and get results from any recording that covered that topic, regardless of the specific terminology used.
+
+An optional [agentic mode](user-guide/inquire-mode.md#agentic-inquire-beta) (opt-in beta, `ENABLE_INQUIRE_AGENT=true`) replaces the single retrieval pass with an AI agent that searches, lists, and reads your recordings iteratively until it can answer. The interface shows each step live with a stop button, keeps a collapsible activity record on every answer, and cites sources as numbered markers with timestamps; clicking a citation opens the recording and starts playback at the cited moment. Per-user privacy settings control what the agent may read: transcripts are always available, while summaries and private notes are individual opt-ins enforced by removing the corresponding capability from the agent entirely.
 
 ## Organization and Management
 
@@ -216,7 +220,7 @@ Store recording audio files in S3-compatible object storage (AWS S3, MinIO, or a
 
 ### Black Hole Processing
 
-Set up a watched directory where dropped audio files are automatically processed. Configure this in [system settings](admin-guide/system-settings.md) for automated workflows. Perfect for automation workflows or batch processing, the black hole directory monitors for new files and queues them for transcription without manual intervention.
+Set up a watched directory where dropped audio files are automatically processed. Configure this in [system settings](admin-guide/system-settings.md) for automated workflows. Perfect for automation workflows or batch processing, the black hole directory monitors for new files and queues them for transcription without manual intervention. In `user_directories` mode, each user gets their own subfolder, which may be named after the user id (`user123` or `123`) or the username itself (matching the naming of the per-user export folders), a clean fit for multi-tenant setups where other systems drop files per user.
 
 ### Automated Export
 
@@ -229,7 +233,7 @@ Improve transcription accuracy for domain-specific content with two complementar
 - **Hotwords** - Provide comma-separated terms (brand names, acronyms, technical jargon) that the transcription engine should prioritize. This biases the model toward correctly recognizing words it might otherwise misspell.
 - **Initial Prompt** - Give the transcription engine context about the recording content, helping it make better overall word choices when audio is ambiguous.
 
-Set these at any level - [per-user defaults](user-guide/settings.md#transcription-hints), [per-tag](user-guide/settings.md#transcription-hints-hotwords--initial-prompt), [per-folder](user-guide/folders.md), or per-upload in the Advanced ASR Options. Values cascade with upload form taking highest priority, then tags, folders, and finally user defaults. See the [FAQ](faq.md#certain-specialized-words-dont-get-transcribed-properly-how-do-i-fix-this) for practical usage tips.
+Set these at any level - [per-user defaults](user-guide/settings.md#transcription-hints), [per-tag](user-guide/settings.md#transcription-hints-hotwords--initial-prompt), [per-folder](user-guide/folders.md), or per-recording in the Advanced ASR Options of both the upload dialog and the in-app recorder (including a saved-template picker in each). Values cascade with the upload or recording form taking highest priority, then tags, folders, and finally user defaults. See the [FAQ](faq.md#certain-specialized-words-dont-get-transcribed-properly-how-do-i-fix-this) for practical usage tips.
 
 ### Custom ASR Configuration
 

@@ -9,7 +9,7 @@
   <a href="https://www.gnu.org/licenses/agpl-3.0"><img alt="AGPL v3" src="https://img.shields.io/badge/License-AGPL_v3-blue.svg"></a>
   <a href="https://github.com/murtaza-nasir/speakr/actions/workflows/docker-publish.yml"><img alt="Docker Build" src="https://github.com/murtaza-nasir/speakr/actions/workflows/docker-publish.yml/badge.svg"></a>
   <a href="https://hub.docker.com/r/learnedmachine/speakr"><img alt="Docker Pulls" src="https://img.shields.io/docker/pulls/learnedmachine/speakr"></a>
-  <a href="https://github.com/murtaza-nasir/speakr/releases/latest"><img alt="Latest Version" src="https://img.shields.io/badge/version-0.10.3--alpha-brightgreen.svg"></a>
+  <a href="https://github.com/murtaza-nasir/speakr/releases/latest"><img alt="Latest Version" src="https://img.shields.io/badge/version-0.10.5--alpha-brightgreen.svg"></a>
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@
 Speakr transforms your audio recordings into organized, searchable, and intelligent notes. Built for privacy-conscious groups and individuals, it runs entirely on your own infrastructure, ensuring your sensitive conversations remain completely private.
 
 <div align="center">
-    <img src="docs/assets/images/screenshots/main-view-video.png" alt="Speakr Main Interface" width="750"/>
+    <img src="docs/assets/images/screenshots/main-view.png" alt="Speakr Main Interface" width="750"/>
 </div>
 
 ## Key Features
@@ -37,21 +37,21 @@ Speakr turns a recording into organized, searchable, shareable knowledge. Here i
 ### Capture
 - **Flexible input** - record from your microphone, your computer's system or browser-tab audio, or both mixed together; or drag and drop existing files. A per-OS setup guide and a virtual-device picker surface Pulse / PipeWire monitors, BlackHole, VB-Cable, Voicemeeter, and Stereo Mix as inputs.
 - **Long sessions** - in-app recordings stream to the server during capture, so sessions can run for hours and survive a page reload.
-- **Hands-off intake** - a watched "black hole" folder auto-imports and processes any audio dropped into it.
+- **Hands-off intake** - a watched "black hole" folder auto-imports and processes any audio dropped into it, with optional per-user subfolders named by user id or username.
 
 ### Transcribe
-- **Bring your own engine** - self-hosted WhisperX (recommended; it is what enables the speaker features below), OpenAI, Mistral / Voxtral, AssemblyAI, or any custom ASR webservice. The right connector is auto-detected from your configuration.
+- **Bring your own engine** - self-hosted WhisperX (recommended; it is what enables the speaker features below), OpenAI, Mistral / Voxtral, AssemblyAI, OpenASR, Alibaba FunASR, or any custom ASR webservice. The right connector is auto-detected from your configuration.
 - **Speaker diarization** - automatic who-said-what labeling (WhisperX, or OpenAI's diarizing models).
 - **Voice profiles** - recognize the same person across different recordings via voice embeddings (requires the WhisperX ASR backend).
-- **Custom vocabulary and hotwords** (most effective with the WhisperX backend) - bias the transcriber toward names, jargon, and acronyms it would otherwise mishear; configurable globally or per tag / folder.
+- **Custom vocabulary and hotwords** (most effective with the WhisperX backend) - bias the transcriber toward names, jargon, and acronyms it would otherwise mishear; configurable globally, per tag / folder, or right in the upload and in-app recording dialogs, with reusable saved templates.
 - **Synced playback** - click any line to jump to that moment, follow-along highlighting during playback, and a chat-style bubble view.
-- **Language support** - automatic language detection plus a quick-pick of 11 common languages.
+- **Language support** - automatic language detection plus the full Whisper language list (about one hundred languages), with names localized to your interface language.
 
 ### Understand
 - **Summaries** - generated automatically, with prompts you can fully customize per recording, tag, or folder (including reusable prompt variables).
 - **Event extraction** - surface action items and calendar-worthy events from a transcript.
-- **Per-recording chat** - ask questions about a single recording in a floating, dockable panel.
-- **Inquire Mode** - semantic search and natural-language chat across your entire library at once.
+- **Per-recording chat** - ask questions about a single recording in a floating, dockable panel; answers cite transcript timestamps as clickable chips that start playback at that moment.
+- **Inquire Mode** - semantic search and natural-language chat across your entire library at once. An optional **agentic mode** (opt-in beta) upgrades this to an AI researcher that iteratively searches, lists, and reads your recordings until it can answer - showing every step live, and citing its sources with numbered links that open the recording and start playback at the cited segment. Ask "what did we decide about the pricing change, and did anyone disagree?" and it reads across the relevant meetings and cites each position back to where it was said. You decide what it may read: transcripts always, summaries and private notes only if you allow them.
 
 ### Organize
 - **Folders and bulk operations** to keep a large library tidy.
@@ -69,7 +69,7 @@ Speakr turns a recording into organized, searchable, shareable knowledge. Here i
 - **Signed webhooks** - HMAC-signed, SSRF-guarded, retrying outbound notifications on recording lifecycle events.
 - **Usage budgets** for LLM tokens and transcription minutes, per user.
 
-Speakr is also an installable Progressive Web App - mobile-first, offline-capable, with a phone share-target - and ships light/dark themes, an incognito mode, and a UI translated into seven languages.
+Speakr is also an installable Progressive Web App - mobile-first, offline-capable, with a phone share-target - and ships light/dark themes, an incognito mode, a configurable Help Center link for your own documentation, and a UI translated into seven languages.
 
 ## Real-World Use Cases
 
@@ -151,6 +151,8 @@ Speakr uses a **connector-based architecture** that auto-detects your transcript
 | **VibeVoice ASR** | Self-hosted (vLLM) | Yes (built-in) | No |
 | **MOSI/Mossland MOSS** | Hosted API key | Yes (built-in) | No |
 | **AssemblyAI** | Just API key | Yes (built-in) | No |
+| **OpenASR** | Self-hosted server | Yes (built-in) | No |
+| **Alibaba FunASR** | API key + OSS bucket | Yes (built-in) | No |
 | **Legacy Whisper** | Just API key | No | No |
 
 **Simplest setup (OpenAI with diarization):**
@@ -210,7 +212,15 @@ Complete documentation is available at **[murtaza-nasir.github.io/speakr](https:
 - [Troubleshooting](https://murtaza-nasir.github.io/speakr/troubleshooting) - Common issues and solutions
 - [FAQ](https://murtaza-nasir.github.io/speakr/faq) - Frequently asked questions
 
-## Latest Release (v0.10.3-alpha)
+## Latest Release (v0.10.5-alpha)
+
+**A database migration fix for long-running installations.** A migration added with SSO support rebuilt the whole user table to change one column, which on databases upgraded from very old versions could fail partway, strand a temporary table and repeat the same error on every startup (#379). Worse, had that rebuild ever completed it would have restored the table from a column list frozen years earlier, discarding later settings such as token budgets, verification state and transcription hints. It now alters only the column it needs, leaving every other column, index and value untouched, and clears the stranded table once it confirms the real one is intact. Startup migrations are additionally serialised across worker processes, grouped so one failure cannot skip the rest, and reported clearly instead of as a single warning line. Upgrading is routine and no configuration changes are required. **Full release notes on the [GitHub release page](https://github.com/murtaza-nasir/speakr/releases/tag/v0.10.5-alpha).**
+
+### v0.10.4-alpha (previous release)
+
+**An agentic Inquire beta, reorganized tag and folder management, and upload workflow improvements.** Inquire gains an opt-in agent mode (`ENABLE_INQUIRE_AGENT=true`) that researches across your recordings with search, listing, and reading tools, shows a live activity timeline, and answers with numbered citations that click through to the exact moment in the recording; each user controls whether their summaries and notes are available to it. Search indexing now chunks along whole speaker turns with timestamps, which is what makes citation deep links land precisely. Tag and folder management merge into one account tab with a single shared card design, and both can now be created directly from the upload dialog with the full editor, including a proper localized language dropdown. The upload button now closes the dialog after queuing, with a new "Upload & Add More" button for the previous behaviour. A community-contributed OpenASR connector adds another local transcription option. Fixes cover the iOS locked-screen recording timer, merged-audio decoding on ASR pipelines, media playback through the service worker, SSO providers with minimal ID tokens, email deliverability headers, and the Identify Speakers save button. Database columns migrate automatically; no configuration changes are required. **Full release notes on the [GitHub release page](https://github.com/murtaza-nasir/speakr/releases/tag/v0.10.4-alpha).**
+
+### v0.10.3-alpha
 
 **A features and fixes release shaped by community reports and contributions.** Meeting dates can now be parsed from filenames on upload, with preset patterns and an optional custom expression, which saves manual edits on batch uploads of older recordings. Auto-export filenames are configurable through a template, and existing exports can be renamed to a new scheme in one pass. Mobile recording gains an external microphone selector for USB and wireless receivers, and a new webhook endpoint accepts uploads directly from the ASR Voice Recorder Android app, both community contributions. The transcription language dropdown now offers the full Whisper language set. On the fixes side, chat responses that hit the output token limit are now flagged instead of being presented as complete, a database-lock failure when editing speakers with Inquire mode enabled is resolved, browser caches self-heal after image upgrades so stale interfaces no longer appear, audio files with non-UTF-8 metadata no longer crash processing, embedding provider compatibility is improved, and transcript downloads keep non-ASCII titles instead of saving as underscores (community contribution). Database columns migrate automatically; no configuration changes are required. **Full release notes on the [GitHub release page](https://github.com/murtaza-nasir/speakr/releases/tag/v0.10.3-alpha).**
 

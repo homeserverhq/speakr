@@ -126,10 +126,15 @@ def test_custom_template_renders_variables():
 
 def test_date_variables_fall_back_to_created_at():
     with app.app_context():
+        from src.utils.dates import to_local
         user = _mk_user(template="{{year}}-{{month}}-{{day}} {{time}}")
         rec = _mk_recording(user, meeting_date=None,
                             created_at=datetime(2024, 12, 31, 23, 5))
-        assert render_export_filename(rec, user) == "2024-12-31 23-05"
+        # Without a meeting_date the filename falls back to created_at, which is
+        # stored as naive UTC and localized for user-facing output.
+        local = to_local(rec.created_at)
+        expected = f"{local.year:04d}-{local.month:02d}-{local.day:02d} {local.hour:02d}-{local.minute:02d}"
+        assert render_export_filename(rec, user) == expected
 
 
 def test_unsafe_characters_are_stripped():

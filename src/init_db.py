@@ -11,12 +11,22 @@ This module handles:
 import os
 import fcntl
 import tempfile
+from contextlib import contextmanager
+
 from sqlalchemy import text, inspect
 
 from src.database import db
 from src.models import Recording, TranscriptChunk, SystemSetting, User
 from src.services.embeddings import process_recording_chunks
-from src.utils import add_column_if_not_exists, migrate_column_type, create_index_if_not_exists
+from src.utils import (
+    add_column_if_not_exists,
+    migrate_column_type,
+    create_index_if_not_exists,
+    drop_not_null,
+    migration_lock,
+    run_once,
+)
+from src.utils.database import ensure_migration_ledger
 
 # Configuration
 ENABLE_INQUIRE_MODE = os.environ.get('ENABLE_INQUIRE_MODE', 'false').lower() == 'true'
@@ -53,6 +63,48 @@ def classify_embedding_identifier_state(current_identifier, stored_identifier, l
     return stored_identifier, migrated_from_legacy, outcome
 
 
+def _remove_orphaned_user_new(engine, app):
+    """Drop the 'user_new' table stranded by the pre-0.10.5 password migration.
+
+    That migration rebuilt the user table from hand-written DDL. pysqlite does
+    not wrap DDL in a transaction, so when the row copy failed the CREATE had
+    already been committed; every later startup then aborted on 'table
+    user_new already exists' and the migration could never complete (#379).
+
+    The table is only ever dropped once the real one is present and holds at
+    least as many rows, so a database left mid-rebuild keeps its only copy of
+    the data and gets a warning instead.
+    """
+    if engine.name != 'sqlite':
+        return
+
+    try:
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        if 'user_new' not in tables:
+            return
+
+        with engine.connect() as conn:
+            orphaned_rows = conn.execute(text('SELECT COUNT(*) FROM user_new')).scalar()
+            live_rows = (
+                conn.execute(text('SELECT COUNT(*) FROM "user"')).scalar()
+                if 'user' in tables else 0
+            )
+
+            if live_rows and live_rows >= orphaned_rows:
+                conn.execute(text('DROP TABLE user_new'))
+                conn.commit()
+                app.logger.info("Removed orphaned user_new table left by an interrupted migration")
+            else:
+                app.logger.warning(
+                    "Leaving orphaned user_new table in place: it holds %d row(s) but the "
+                    "live user table holds %d. Inspect the database before removing it.",
+                    orphaned_rows, live_rows
+                )
+    except Exception as e:
+        app.logger.warning(f"Could not clean up orphaned user_new table: {e}")
+
+
 def initialize_database(app):
     """
     Initialize database schema and run migrations.
@@ -74,7 +126,56 @@ def initialize_database(app):
         except Exception as e:
             app.logger.warning(f"Could not enable WAL mode: {e}")
 
+    # Only one process at a time, so the several startup processes cannot
+    # interleave and see each other's half-applied schema. Failing to take the
+    # lock is not fatal; every migration below is independently idempotent.
+    with migration_lock(engine, logger=app.logger):
+        try:
+            ensure_migration_ledger(engine)
+        except Exception as e:
+            app.logger.warning(f"Could not create the schema_migrations ledger: {e}")
+
+        _run_migrations(app, engine)
+
+
+@contextmanager
+def _migration_section(app, failures, name):
+    """Contain a failure to one group of migrations instead of all of them.
+
+    The sections in _run_migrations used to share a single try block, so the
+    first unguarded failure silently skipped every migration after it and the
+    app then served a part-upgraded schema. Each section now fails alone: the
+    error is logged with its traceback, recorded for the summary banner, and
+    the remaining sections still run.
+
+    Later sections may assume earlier ones succeeded (a column addition, most
+    commonly), so a failure can still cascade into further section failures.
+    That is acceptable: each is reported, and every section is retried on the
+    next startup because migrations are idempotent.
+    """
     try:
+        yield
+    except Exception as e:
+        failures.append((name, e))
+        app.logger.error("Migration section '%s' failed: %s", name, e)
+        app.logger.exception("Section '%s' traceback", name)
+        # Discard whatever the failed section left pending in the ORM session.
+        # Without this its open transaction keeps SQLite's write lock, so the
+        # following sections fail with "database is locked", and its half-built
+        # rows get flushed to disk by the next section that commits.
+        try:
+            db.session.rollback()
+        except Exception as rollback_error:
+            app.logger.warning(
+                "Could not roll back the session after section '%s': %s", name, rollback_error
+            )
+
+
+def _run_migrations(app, engine):
+    """Apply every schema migration. Assumes the migration lock is held."""
+    failures = []
+
+    with _migration_section(app, failures, "core recording and user columns"):
         # Add is_inbox column with default value of 1 (True)
         if add_column_if_not_exists(engine, 'recording', 'is_inbox', 'BOOLEAN DEFAULT 1'):
             app.logger.info("Added is_inbox column to recording table")
@@ -109,76 +210,18 @@ def initialize_database(app):
         if add_column_if_not_exists(engine, 'user', 'sso_subject', 'VARCHAR(255)'):
             app.logger.info("Added sso_subject column to user table")
         
-        # Make password column nullable for SSO users
+        # SSO users authenticate against their provider and never hold a local
+        # password, so the column has to accept NULL.
         try:
-            inspector = inspect(engine)
-            if 'user' in inspector.get_table_names():
-                if engine.name == 'sqlite':
-                    # SQLite doesn't support ALTER COLUMN, so we need to check and recreate
-                    with engine.connect() as conn:
-                        result = conn.execute(text("SELECT sql FROM sqlite_master WHERE type='table' AND name='user'"))
-                        schema = result.scalar()
-
-                        if schema and 'password VARCHAR(60) NOT NULL' in schema:
-                            app.logger.info("Migrating user table to make password nullable for SSO support...")
-
-                            conn.execute(text("""
-                                CREATE TABLE user_new (
-                                    id INTEGER NOT NULL,
-                                    username VARCHAR(20) NOT NULL,
-                                    email VARCHAR(120) NOT NULL,
-                                    password VARCHAR(60),
-                                    is_admin BOOLEAN,
-                                    can_share_publicly BOOLEAN,
-                                    transcription_language VARCHAR(10),
-                                    output_language VARCHAR(50),
-                                    ui_language VARCHAR(10),
-                                    summary_prompt TEXT,
-                                    extract_events BOOLEAN,
-                                    name VARCHAR(100),
-                                    job_title VARCHAR(100),
-                                    company VARCHAR(100),
-                                    diarize BOOLEAN,
-                                    sso_provider VARCHAR(100),
-                                    sso_subject VARCHAR(255),
-                                    PRIMARY KEY (id),
-                                    UNIQUE (username),
-                                    UNIQUE (email)
-                                )
-                            """))
-                            conn.execute(text("""
-                                INSERT INTO user_new
-                                SELECT id, username, email, password, is_admin, can_share_publicly,
-                                       transcription_language, output_language, ui_language,
-                                       summary_prompt, extract_events, name, job_title, company,
-                                       diarize, sso_provider, sso_subject
-                                FROM user
-                            """))
-                            conn.execute(text("DROP TABLE user"))
-                            conn.execute(text("ALTER TABLE user_new RENAME TO user"))
-                            conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ix_user_sso_subject ON "user" (sso_subject)'))
-                            conn.commit()
-                            app.logger.info("Successfully made password column nullable for SSO support")
-                        else:
-                            app.logger.info("Password column is already nullable, skipping migration")
-
-                elif engine.name == 'postgresql':
-                    # PostgreSQL supports ALTER COLUMN directly
-                    with engine.connect() as conn:
-                        result = conn.execute(text("""
-                            SELECT is_nullable FROM information_schema.columns
-                            WHERE table_name = 'user' AND column_name = 'password'
-                        """))
-                        row = result.fetchone()
-                        if row and row[0] == 'NO':
-                            conn.execute(text('ALTER TABLE "user" ALTER COLUMN password DROP NOT NULL'))
-                            conn.commit()
-                            app.logger.info("Made password column nullable for SSO support (PostgreSQL)")
-                        else:
-                            app.logger.info("Password column is already nullable, skipping migration")
+            if drop_not_null(engine, 'user', 'password'):
+                app.logger.info("Made password column nullable for SSO support")
         except Exception as e:
             app.logger.warning(f"Could not migrate password column to nullable (may cause issues with SSO): {e}")
 
+        _remove_orphaned_user_new(engine, app)
+
+
+    with _migration_section(app, failures, "recording, tag, speaker and processing columns"):
         if add_column_if_not_exists(engine, 'recording', 'mime_type', 'VARCHAR(100)'):
             app.logger.info("Added mime_type column to recording table")
         if add_column_if_not_exists(engine, 'recording', 'audio_duration_seconds', 'FLOAT'):
@@ -300,6 +343,7 @@ def initialize_database(app):
         if add_column_if_not_exists(engine, 'user', 'can_share_publicly', 'BOOLEAN DEFAULT 1'):
             app.logger.info("Added can_share_publicly column to user table")
 
+    with _migration_section(app, failures, "user settings columns"):
         # Token budget for rate limiting
         if add_column_if_not_exists(engine, 'user', 'monthly_token_budget', 'INTEGER'):
             app.logger.info("Added monthly_token_budget column to user table")
@@ -365,6 +409,8 @@ def initialize_database(app):
             app.logger.info("Added show_timestamps_simple_view column to user table")
         if add_column_if_not_exists(engine, 'user', 'editor_autosave', 'BOOLEAN DEFAULT 0'):
             app.logger.info("Added editor_autosave column to user table")
+        if add_column_if_not_exists(engine, 'user', 'speaker_count_mode', 'VARCHAR(10)'):
+            app.logger.info("Added speaker_count_mode column to user table")
         if add_column_if_not_exists(engine, 'user', 'audio_player_position', "VARCHAR(10) DEFAULT 'bottom'"):
             app.logger.info("Added audio_player_position column to user table")
 
@@ -384,6 +430,7 @@ def initialize_database(app):
         if add_column_if_not_exists(engine, 'folder', 'default_initial_prompt', 'TEXT'):
             app.logger.info("Added default_initial_prompt column to folder table")
 
+    with _migration_section(app, failures, "token indexes, export templates and sharing columns"):
         # Create indexes for token lookups (for faster token verification)
         try:
             if create_index_if_not_exists(engine, 'ix_user_email_verification_token', 'user', 'email_verification_token'):
@@ -404,6 +451,13 @@ def initialize_database(app):
         # Configurable auto-export filenames (#348)
         if add_column_if_not_exists(engine, 'user', 'export_filename_template', 'VARCHAR(500)'):
             app.logger.info("Added export_filename_template column to user table")
+
+        # Inquire content availability toggles (agentic inquire). Nullable on
+        # purpose: NULL means "use the admin env default".
+        if add_column_if_not_exists(engine, 'user', 'inquire_allow_summaries', 'BOOLEAN'):
+            app.logger.info("Added inquire_allow_summaries column to user table")
+        if add_column_if_not_exists(engine, 'user', 'inquire_allow_notes', 'BOOLEAN'):
+            app.logger.info("Added inquire_allow_notes column to user table")
         if add_column_if_not_exists(engine, 'recording', 'export_filename', 'VARCHAR(500)'):
             app.logger.info("Added export_filename column to recording table")
 
@@ -503,6 +557,7 @@ def initialize_database(app):
                 if add_column_if_not_exists(engine, 'shared_recording_state', 'is_highlighted', 'BOOLEAN DEFAULT 0'):
                     app.logger.info("Added is_highlighted column to shared_recording_state table")
 
+    with _migration_section(app, failures, "meeting_date datetime migration"):
         # Migrate meeting_date from DATE to DATETIME format
         # This migration handles both:
         # 1. Converting existing DATE columns to DATETIME (for fresh pulls)
@@ -597,6 +652,7 @@ def initialize_database(app):
             app.logger.warning(f"Error during meeting_date migration: {e}")
             app.logger.warning("New recordings will work correctly, but existing dates may need manual migration")
 
+    with _migration_section(app, failures, "performance and uniqueness indexes"):
         # Add index on TranscriptChunk.speaker_name for performance
         # This improves speaker rename operations which update all chunks
         try:
@@ -666,6 +722,7 @@ def initialize_database(app):
         except Exception as e:
             app.logger.warning(f"Could not create index on recording.folder_id: {e}")
 
+    with _migration_section(app, failures, "default system settings"):
         # Initialize default system settings
         if not SystemSetting.query.filter_by(key='transcript_length_limit').first():
             SystemSetting.set_setting(
@@ -794,6 +851,7 @@ def initialize_database(app):
             )
             app.logger.info("Initialized enable_folders setting")
 
+    with _migration_section(app, failures, "embedding identifier tracking"):
         # Track the embedding identifier (provider + model) in system_setting
         # so we can warn when either changes between restarts. Issue #262 —
         # old vectors will not match a new model's output dimensionality or
@@ -857,6 +915,7 @@ def initialize_database(app):
             db.session.rollback()
             app.logger.warning(f"embedding_identifier compatibility check skipped: {e}")
 
+    with _migration_section(app, failures, "one-shot data cleanups"):
         # One-time email normalization: lowercase (and trim) existing stored
         # emails so they match the normalize-on-write behavior. Login and
         # uniqueness are case-insensitive regardless, so this is cleanup, not a
@@ -893,11 +952,12 @@ def initialize_database(app):
         # One-shot migration: clean up legacy User.transcription_language values
         # that were stored as display names ("Français", "English") before the
         # account-settings input was a dropdown. Issue #256.
-        try:
+        #
+        # Recorded in the ledger rather than re-detected, because detecting it
+        # means loading every user on every startup for a fix that can only ever
+        # be needed once.
+        def _normalize_transcription_languages(_engine):
             from src.utils.language import normalize_language_code
-            from sqlalchemy import or_
-            # Touch only rows where the value isn't already a valid 2-letter code,
-            # to keep this idempotent across restarts.
             stale_users = User.query.filter(User.transcription_language.isnot(None)).all()
             cleaned = 0
             for u in stale_users:
@@ -911,10 +971,15 @@ def initialize_database(app):
             if cleaned:
                 db.session.commit()
                 app.logger.info(f"Normalized transcription_language for {cleaned} user(s)")
+
+        try:
+            run_once(engine, '0001_normalize_transcription_language',
+                     _normalize_transcription_languages, logger=app.logger)
         except Exception as e:
             db.session.rollback()
             app.logger.warning(f"transcription_language normalization migration skipped: {e}")
 
+    with _migration_section(app, failures, "inquire mode chunk backfill"):
         # Process existing recordings for inquire mode (chunk and embed them)
         # Only run if inquire mode is enabled
         if ENABLE_INQUIRE_MODE:
@@ -971,8 +1036,18 @@ def initialize_database(app):
                 app.logger.warning(f"Error during existing recordings migration: {e}")
                 app.logger.info("Existing recordings can be migrated later using the admin API or migration script.")
             
-    except Exception as e:
-        app.logger.error(f"Error during database migration: {e}")
+    if failures:
+        app.logger.error("=" * 72)
+        app.logger.error("DATABASE MIGRATION: %d section(s) failed: %s",
+                         len(failures), ", ".join(name for name, _ in failures))
+        app.logger.error("Sections after a failed one were still applied, but the schema "
+                         "may be partly upgraded.")
+        app.logger.error("The application will keep starting, but expect errors until this is fixed.")
+        app.logger.error("Please report this with the tracebacks above: "
+                         "https://github.com/murtaza-nasir/speakr/issues")
+        app.logger.error("=" * 72)
+        app.config['MIGRATION_FAILED'] = "; ".join(
+            f"{name}: {error}" for name, error in failures)
 
 
 if __name__ == '__main__':

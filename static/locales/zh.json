@@ -115,11 +115,14 @@
     "apiTokens": "API 令牌",
     "customPrompts": "自定义提示",
     "folderManagement": "文件夹管理",
+    "foldersSubtab": "文件夹",
     "namingTemplates": "命名",
     "promptOptions": "提示选项",
     "sharedTranscripts": "共享转录",
     "speakersManagement": "发言人管理",
     "tagManagement": "标签管理",
+    "tagsAndFolders": "标签与文件夹",
+    "tagsSubtab": "标签",
     "templates": "模板",
     "transcriptTemplates": "转录模板",
     "preferences": "偏好设置",
@@ -147,6 +150,9 @@
     "budgetWarnings": "预算警告",
     "characters": "字符",
     "chunkSize": "块大小",
+    "chunkingLegacy": "字符窗口(旧版)",
+    "chunkingSegmentAware": "按语段(发言轮次+时间戳)",
+    "chunkingStrategy": "分块方式",
     "complete": "完成",
     "completedRecordings": "已完成",
     "confirmPasswordLabel": "确认密码",
@@ -419,7 +425,8 @@
     "whatAreActionItems": "有哪些行动项？",
     "whatAreKeyPoints": "关键要点是什么？",
     "whatWasDiscussed": "讨论了什么？",
-    "whoSaidWhat": "谁说了什么？"
+    "whoSaidWhat": "谁说了什么？",
+    "playFromHere": "从此处播放"
   },
   "colorScheme": {
     "chooseRecording": "从侧边栏选择一个录音以查看其转录和摘要",
@@ -883,7 +890,12 @@
     "transcriptionModel": "转录模型",
     "useResolvedDefault": "（使用标签/文件夹/全局默认）",
     "defaultTranscriptionModel": "默认转录模型",
-    "defaultTranscriptionModelHelp": "覆盖此标签或文件夹下录音所使用的转录模型。"
+    "defaultTranscriptionModelHelp": "覆盖此标签或文件夹下录音所使用的转录模型。",
+    "newFolderOption": "新建文件夹",
+    "speakers": "说话人",
+    "speakerModeRange": "范围",
+    "speakerModeExact": "精确",
+    "numberOfSpeakers": "说话人数量"
   },
   "groups": {
     "addMembers": "添加成员...",
@@ -1039,7 +1051,9 @@
     "uploadingRecording": "正在上传录音…",
     "whatWillHappen": "会发生什么？",
     "whyNotWorking": "为什么不工作？",
-    "youHaveXSpeakers": "您有 {{count}} 位发言人，但只有16种独特的颜色可用。颜色将在第16位发言人之后重复。"
+    "youHaveXSpeakers": "您有 {{count}} 位发言人，但只有16种独特的颜色可用。颜色将在第16位发言人之后重复。",
+    "createTagNamed": "创建标签\"{{name}}\"",
+    "newTag": "新建标签"
   },
   "incognito": {
     "audioNotStored": "隐身模式下不会保存音频",
@@ -1078,6 +1092,7 @@
     "placeholder": "询问关于您筛选的转录内容...",
     "selectFilters": "在左侧选择筛选器以缩小转录范围，然后提问以从录音中获得见解。",
     "sendHint": "按Enter发送 • Ctrl+Enter换行",
+    "sources": "来源",
     "speakerRequirement": "发言人识别需要包含多个发言人的录音",
     "speakers": "发言人",
     "speakersCount": "个发言人",
@@ -1085,6 +1100,14 @@
     "tagsCount": "个标签",
     "title": "查询",
     "to": "结束日期"
+  },
+  "inquirePrivacy": {
+    "title": "Inquire 隐私",
+    "description": "选择 Inquire AI 在回答问题时可以读取的内容。转录文本始终可用；其余内容由您决定。",
+    "summariesLabel": "允许访问摘要",
+    "summariesHelp": "允许 Inquire 读取录音的 AI 摘要,以便快速浏览较长的录音。",
+    "notesLabel": "允许访问您的笔记",
+    "notesHelp": "除非您启用此选项,否则您的私人笔记不可访问。仅会使用您自己的笔记,绝不会使用他人共享给您的录音中的笔记。"
   },
   "languages": {
     "ar": "阿拉伯语",
@@ -1249,6 +1272,7 @@
     "adminDashboard": "管理面板",
     "darkMode": "深色模式",
     "groupManagement": "群组管理",
+    "helpCenter": "帮助中心",
     "home": "主页",
     "language": "语言",
     "lightMode": "浅色模式",
@@ -1747,7 +1771,8 @@
     "keepAudioOnlyLargerAllowed": "允许更大文件",
     "largeVideoNotice": "视频文件较大。上传将继续；转录可能耗时更长，并依赖服务器端的分块处理。",
     "options": "选项",
-    "transcriptionOptions": "转录选项"
+    "transcriptionOptions": "转录选项",
+    "uploadAndAddMore": "上传并继续添加"
   },
   "uploadProgress": {
     "title": "上传进度"
@@ -1962,5 +1987,12 @@
     "warningSummary": "这将覆盖对标题和摘要的所有手动编辑。",
     "warningTranscription": "这将覆盖所有转录、标题和摘要。手动编辑将丢失。",
     "whatToReprocess": "您要重新处理什么？"
+  },
+  "emptyState": {
+    "readyToCapture": "准备录制",
+    "readyBody": "拖入音频文件、通过麦克风录制或捕获系统音频。Speakr 会将其转换为可搜索的转录文本，并附带摘要和聊天。",
+    "newRecording": "新建录音",
+    "selectRecording": "选择一个录音",
+    "selectBody": "从侧边栏中选择一个，或开始新的录音。"
   }
 }

@@ -104,6 +104,8 @@
          data-use-asr-endpoint="{{ use_asr_endpoint }}"
          data-connector-supports-diarization="{{ connector_supports_diarization }}"
          data-connector-supports-speaker-count="{{ connector_supports_speaker_count }}"
+         data-connector-supports-exact-speaker-count="{{ connector_supports_exact_speaker_count }}"
+         data-speaker-count-mode="{{ current_user.speaker_count_mode or 'range' if current_user.is_authenticated else 'range' }}"
          data-connector-supports-hotwords="{{ connector_supports_hotwords }}"
          data-connector-supports-initial-prompt="{{ connector_supports_initial_prompt }}"
          data-enable-archive-toggle="{{ enable_archive_toggle }}"
@@ -182,6 +184,9 @@
         {% include 'modals/bulk-merge-modal.html' %}
     </div>
 
+    <!-- Shared tag/folder editor modals (outside the Vue root; driven by organizer-modals.js) -->
+    {% include 'includes/organizer_modals.html' %}
+
     <!-- CSRF Token Management -->
     <script src="{{ url_for('static', filename='js/csrf-refresh.js') }}"></script>
 
@@ -224,6 +229,12 @@
     </script>
 
     <!-- Service Worker Registration handled by app.modular.js -->
+
+    <!-- Shared ASR language list (feeds Vue dropdowns and the organizer modals) -->
+    <script src="{{ url_for('static', filename='js/asr-languages.js') }}"></script>
+
+    <!-- Shared tag/folder modal driver (standalone creation mode) -->
+    <script src="{{ url_for('static', filename='js/organizer-modals.js') }}"></script>
 
     <!-- Vue.js Application Script -->
     <script type="module" src="{{ url_for('static', filename='js/app.modular.js') }}"></script>

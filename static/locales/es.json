@@ -115,11 +115,14 @@
     "apiTokens": "Tokens de API",
     "customPrompts": "Prompts Personalizados",
     "folderManagement": "Gestión de carpetas",
+    "foldersSubtab": "Carpetas",
     "namingTemplates": "Nombrado",
     "promptOptions": "Opciones de Prompt",
     "sharedTranscripts": "Transcripciones Compartidas",
     "speakersManagement": "Gestión de Hablantes",
     "tagManagement": "Gestión de Etiquetas",
+    "tagsAndFolders": "Etiquetas y carpetas",
+    "tagsSubtab": "Etiquetas",
     "templates": "Plantillas",
     "transcriptTemplates": "Plantillas de Transcripción",
     "preferences": "Preferencias",
@@ -147,6 +150,9 @@
     "budgetWarnings": "Advertencias de Presupuesto",
     "characters": "caracteres",
     "chunkSize": "Tamaño del Fragmento",
+    "chunkingLegacy": "Ventanas de caracteres (heredado)",
+    "chunkingSegmentAware": "Por segmentos (turnos de hablante + marcas de tiempo)",
+    "chunkingStrategy": "Fragmentación",
     "complete": "completado",
     "completedRecordings": "Completadas",
     "confirmPasswordLabel": "Confirmar contraseña",
@@ -419,7 +425,8 @@
     "whatAreActionItems": "¿Cuáles son los elementos de acción?",
     "whatAreKeyPoints": "¿Cuáles son los puntos clave?",
     "whatWasDiscussed": "¿Qué se discutió?",
-    "whoSaidWhat": "¿Quién dijo qué?"
+    "whoSaidWhat": "¿Quién dijo qué?",
+    "playFromHere": "Reproducir desde aquí"
   },
   "colorScheme": {
     "chooseRecording": "Elige una grabación de la barra lateral para ver su transcripción y resumen",
@@ -883,7 +890,12 @@
     "transcriptionModel": "Modelo de transcripción",
     "useResolvedDefault": "(usar valor por defecto de etiqueta/carpeta/global)",
     "defaultTranscriptionModel": "Modelo de transcripción por defecto",
-    "defaultTranscriptionModelHelp": "Sobrescribe el modelo de transcripción usado para grabaciones con esta etiqueta o carpeta."
+    "defaultTranscriptionModelHelp": "Sobrescribe el modelo de transcripción usado para grabaciones con esta etiqueta o carpeta.",
+    "newFolderOption": "Nueva carpeta",
+    "speakers": "Hablantes",
+    "speakerModeRange": "Rango",
+    "speakerModeExact": "Exacto",
+    "numberOfSpeakers": "Número de hablantes"
   },
   "groups": {
     "addMembers": "Añadir miembros...",
@@ -1039,7 +1051,9 @@
     "uploadingRecording": "Subiendo la grabación…",
     "whatWillHappen": "¿Qué pasará?",
     "whyNotWorking": "¿Por qué no funciona?",
-    "youHaveXSpeakers": "Tiene {{count}} oradores, pero solo hay 16 colores únicos disponibles. Los colores se repetirán después del decimosexto orador."
+    "youHaveXSpeakers": "Tiene {{count}} oradores, pero solo hay 16 colores únicos disponibles. Los colores se repetirán después del decimosexto orador.",
+    "createTagNamed": "Crear etiqueta \"{{name}}\"",
+    "newTag": "Nueva etiqueta"
   },
   "incognito": {
     "audioNotStored": "El audio no se almacena en modo incógnito",
@@ -1078,6 +1092,7 @@
     "placeholder": "Haga preguntas sobre sus transcripciones filtradas...",
     "selectFilters": "Seleccione filtros a la izquierda para reducir sus transcripciones, luego haga preguntas para obtener información de sus grabaciones.",
     "sendHint": "Presione Enter para enviar • Ctrl+Enter para nueva línea",
+    "sources": "Fuentes",
     "speakerRequirement": "La identificación de oradores requiere grabaciones con múltiples oradores",
     "speakers": "Oradores",
     "speakersCount": "oradores",
@@ -1085,6 +1100,14 @@
     "tagsCount": "etiquetas",
     "title": "Consultar",
     "to": "Hasta"
+  },
+  "inquirePrivacy": {
+    "title": "Privacidad de Inquire",
+    "description": "Elija qué puede leer la IA de Inquire al responder sus preguntas. Las transcripciones siempre están disponibles; todo lo demás depende de usted.",
+    "summariesLabel": "Permitir acceso a los resúmenes",
+    "summariesHelp": "Permite a Inquire leer los resúmenes de IA de sus grabaciones para revisar rápidamente grabaciones largas.",
+    "notesLabel": "Permitir acceso a sus notas",
+    "notesHelp": "Sus notas privadas permanecen inaccesibles a menos que active esta opción. Solo se usan sus propias notas, nunca las notas de grabaciones compartidas con usted."
   },
   "languages": {
     "ar": "Árabe",
@@ -1249,6 +1272,7 @@
     "adminDashboard": "Panel de Administración",
     "darkMode": "Modo Oscuro",
     "groupManagement": "Gestión de Grupos",
+    "helpCenter": "Centro de Ayuda",
     "home": "Inicio",
     "language": "Idioma",
     "lightMode": "Modo Claro",
@@ -1747,7 +1771,8 @@
     "keepAudioOnlyLargerAllowed": "Se permiten subidas más grandes",
     "largeVideoNotice": "Archivo de vídeo grande. La subida continuará; la transcripción puede tardar más y usa el troceado en el servidor.",
     "options": "Opciones",
-    "transcriptionOptions": "Opciones de transcripción"
+    "transcriptionOptions": "Opciones de transcripción",
+    "uploadAndAddMore": "Subir y añadir más"
   },
   "uploadProgress": {
     "title": "Progreso de Carga"
@@ -1962,5 +1987,12 @@
     "warningSummary": "Esto sobrescribirá cualquier edición manual de títulos y resúmenes.",
     "warningTranscription": "Esto sobrescribirá todas las transcripciones, títulos y resúmenes. Las ediciones manuales se perderán.",
     "whatToReprocess": "¿Qué desea reprocesar?"
+  },
+  "emptyState": {
+    "readyToCapture": "Listo para grabar",
+    "readyBody": "Arrastre un archivo de audio, grabe desde el micrófono o capture el audio del sistema. Speakr lo convierte en una transcripción con resumen y chat.",
+    "newRecording": "Nueva grabación",
+    "selectRecording": "Seleccione una grabación",
+    "selectBody": "Elija una en la barra lateral o inicie una nueva grabación."
   }
 }

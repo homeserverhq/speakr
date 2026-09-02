@@ -28,6 +28,11 @@ class User(db.Model, UserMixin):
     ui_language = db.Column(db.String(10), nullable=True, default='en')  # For UI language preference (en, es, fr, zh)
     summary_prompt = db.Column(db.Text, nullable=True)
     extract_events = db.Column(db.Boolean, default=False)  # Enable event extraction from transcripts
+    # Inquire content availability (agentic inquire). Transcripts are always
+    # available; summaries/notes are optional. NULL = use the admin env
+    # default (INQUIRE_DEFAULT_ALLOW_SUMMARIES=true / INQUIRE_DEFAULT_ALLOW_NOTES=false).
+    inquire_allow_summaries = db.Column(db.Boolean, nullable=True)
+    inquire_allow_notes = db.Column(db.Boolean, nullable=True)
     name = db.Column(db.String(100), nullable=True)
     job_title = db.Column(db.String(100), nullable=True)
     company = db.Column(db.String(100), nullable=True)
@@ -87,6 +92,9 @@ class User(db.Model, UserMixin):
     # UI/display preferences
     show_timestamps_simple_view = db.Column(db.Boolean, default=False)
     editor_autosave = db.Column(db.Boolean, default=False)
+    # Speaker-count entry mode in transcription UIs: 'range' (min/max)
+    # or 'single' (one count, stored as min == max). Null means 'range' (#362).
+    speaker_count_mode = db.Column(db.String(10), nullable=True)
     # Audio player placement in the recording-detail view. 'bottom'
     # (default) keeps the player anchored under the content columns;
     # 'top' renders it above the columns so it sits closer to the

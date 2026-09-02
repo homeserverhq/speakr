@@ -58,7 +58,7 @@ export function useAudio(state, utils) {
         isDarkMode, wakeLock, animationFrameId,
         activeStreams, visualizer, micVisualizer, systemVisualizer, canRecordAudio,
         canRecordSystemAudio, systemAudioSupported, systemAudioError, globalError,
-        selectedTagIds, selectedFolderId, asrLanguage, asrMinSpeakers, asrMaxSpeakers, uploadQueue,
+        selectedTagIds, selectedFolderId, asrLanguage, asrMinSpeakers, asrMaxSpeakers, asrInitialPrompt, asrHotwords, asrTranscriptionModel, uploadQueue,
         progressPopupMinimized, progressPopupClosed,
         // Incognito mode
         enableIncognitoMode, incognitoMode, incognitoRecording, incognitoProcessing,
@@ -910,7 +910,10 @@ export function useAudio(state, utils) {
                     asrOptions: {
                         language: asrLanguage.value || '',
                         min_speakers: asrMinSpeakers.value || '',
-                        max_speakers: asrMaxSpeakers.value || ''
+                        max_speakers: asrMaxSpeakers.value || '',
+                        initial_prompt: asrInitialPrompt.value || '',
+                        hotwords: asrHotwords.value || '',
+                        transcription_model: asrTranscriptionModel.value || ''
                     },
                     mimeType,
                     incognito: !!(incognitoMode && incognitoMode.value)
@@ -1043,12 +1046,22 @@ export function useAudio(state, utils) {
             // recording restores recordingTime past the mark in one jump and
             // then gets the warning on its first tick.
             let durationWarningShown = false;
+            // Advance the counter by real elapsed wall time instead of by
+            // tick count (#341): mobile browsers (iOS especially) suspend
+            // timers while the screen is locked, so counting ticks makes the
+            // displayed duration fall far behind the actual recording even
+            // though the audio itself keeps capturing. On return from
+            // background the first tick folds in the whole missed interval.
+            let lastTickMs = Date.now();
             recordingInterval.value = setInterval(() => {
+                const nowMs = Date.now();
                 // Freeze the elapsed-time counter while paused (#338). The
                 // interval keeps running so the max-duration closure survives a
-                // pause/resume; it just skips ticking.
-                if (isPaused && isPaused.value) return;
-                recordingTime.value++;
+                // pause/resume; it just skips ticking (and absorbs the gap so
+                // paused time never counts).
+                if (isPaused && isPaused.value) { lastTickMs = nowMs; return; }
+                recordingTime.value += Math.max(0, Math.round((nowMs - lastTickMs) / 1000));
+                lastTickMs = nowMs;
                 if (!durationWarningShown && recordingTime.value >= recordingMaxSeconds * 0.8) {
                     durationWarningShown = true;
                     const minutesLeft = Math.max(1, Math.round((recordingMaxSeconds - recordingTime.value) / 60));
@@ -1250,6 +1263,9 @@ export function useAudio(state, utils) {
                     language: asrLanguage.value || null,
                     min_speakers: asrMinSpeakers.value || null,
                     max_speakers: asrMaxSpeakers.value || null,
+                    initial_prompt: asrInitialPrompt.value || null,
+                    hotwords: asrHotwords.value || null,
+                    transcription_model: asrTranscriptionModel.value || null,
                 };
                 if (mergeIntent) {
                     metadata.merge_intent = mergeIntent;
@@ -1280,7 +1296,7 @@ export function useAudio(state, utils) {
                 // panel so the queued recording appears immediately, the same
                 // way a drag-drop upload does (instead of only after a manual
                 // page refresh).
-                currentView.value = null;
+                currentView.value = selectedRecording.value ? 'detail' : null;
                 showUploadModal.value = false;
                 try { await utils.onServerRecordingQueued?.(); } catch (_) { /* non-fatal */ }
                 return result;
@@ -1316,7 +1332,10 @@ export function useAudio(state, utils) {
             asrOptions: {
                 language: asrLanguage.value,
                 min_speakers: asrMinSpeakers.value,
-                max_speakers: asrMaxSpeakers.value
+                max_speakers: asrMaxSpeakers.value,
+                initial_prompt: asrInitialPrompt.value,
+                hotwords: asrHotwords.value,
+                transcription_model: asrTranscriptionModel.value
             },
             status: 'queued',
             recordingId: null,
@@ -1343,11 +1362,17 @@ export function useAudio(state, utils) {
         asrLanguage.value = '';
         asrMinSpeakers.value = '';
         asrMaxSpeakers.value = '';
+        asrInitialPrompt.value = '';
+        asrHotwords.value = '';
+        asrTranscriptionModel.value = '';
         await releaseWakeLock();
         await hideRecordingNotification();
 
         // Return to upload modal so the user can finish the upload form.
-        currentView.value = null;
+        // Behind the modal, land on the open recording's detail view when one
+        // is selected (a bare null left a blank main area if the user then
+        // cancelled the modal).
+        currentView.value = selectedRecording.value ? 'detail' : null;
         showUploadModal.value = true;
 
         // Start upload immediately
@@ -1489,6 +1514,12 @@ export function useAudio(state, utils) {
             if (asrMaxSpeakers.value && asrMaxSpeakers.value !== '') {
                 formData.append('max_speakers', asrMaxSpeakers.value.toString());
             }
+            if (asrInitialPrompt.value && asrInitialPrompt.value.trim()) {
+                formData.append('initial_prompt', asrInitialPrompt.value.trim());
+            }
+            if (asrHotwords.value && asrHotwords.value.trim()) {
+                formData.append('hotwords', asrHotwords.value.trim());
+            }
 
             // Request auto-summarization
             formData.append('auto_summarize', 'true');
@@ -1612,6 +1643,9 @@ export function useAudio(state, utils) {
         asrLanguage.value = '';
         asrMinSpeakers.value = '';
         asrMaxSpeakers.value = '';
+        asrInitialPrompt.value = '';
+        asrHotwords.value = '';
+        asrTranscriptionModel.value = '';
 
         // If a server-side session was open (Phase B of #287 c/d), abort it
         // so the chunks on disk are reaped immediately rather than waiting
@@ -1636,7 +1670,10 @@ export function useAudio(state, utils) {
         await hideRecordingNotification();
 
         // Return to upload modal so the user can finish the upload form.
-        currentView.value = null;
+        // Behind the modal, land on the open recording's detail view when one
+        // is selected (a bare null left a blank main area if the user then
+        // cancelled the modal).
+        currentView.value = selectedRecording.value ? 'detail' : null;
         showUploadModal.value = true;
     };
 
@@ -1805,6 +1842,9 @@ export function useAudio(state, utils) {
                 asrLanguage.value = recovered.metadata.asrOptions.language || '';
                 asrMinSpeakers.value = recovered.metadata.asrOptions.min_speakers || '';
                 asrMaxSpeakers.value = recovered.metadata.asrOptions.max_speakers || '';
+                asrInitialPrompt.value = recovered.metadata.asrOptions.initial_prompt || '';
+                asrHotwords.value = recovered.metadata.asrOptions.hotwords || '';
+                asrTranscriptionModel.value = recovered.metadata.asrOptions.transcription_model || '';
             }
 
             // Restore the incognito state the recording was left in, so a

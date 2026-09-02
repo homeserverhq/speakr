@@ -105,6 +105,14 @@ class FileMonitor:
                 users = User.query.all()
                 self._valid_users = {user.id: user.username for user in users}
                 self._username_to_id = {user.username: user.id for user in users}
+                # Username-named watch folders (#365) also accept the
+                # filesystem-safe variant, matching the per-user export
+                # directories which are created as secure_filename(username).
+                from werkzeug.utils import secure_filename
+                for user in users:
+                    safe = secure_filename(user.username)
+                    if safe and safe not in self._username_to_id:
+                        self._username_to_id[safe] = user.id
                 
                 self._last_user_cache_update = current_time
                 self.logger.debug(f"Updated user cache: {len(self._valid_users)} users, admin: {self._admin_user_id}")
@@ -145,19 +153,25 @@ class FileMonitor:
         if not self.base_watch_directory.exists():
             return
 
-        # Look for user directories (e.g., user123, 42, or by username)
+        # Look for user directories, either id-based (user123, 123) or named
+        # after the username itself (#365, consistent with export folders).
         for item in self.base_watch_directory.iterdir():
             if not item.is_dir():
                 continue
 
             # Extract user ID from directory name
             user_id = self._extract_user_id_from_dirname(item.name)
-            # Fallback: try matching directory name as a username
-            if user_id is None and item.name in self._username_to_id:
-                user_id = self._username_to_id[item.name]
             if user_id and user_id in self._valid_users:
                 self._scan_directory_for_user(item, user_id)
                 self._scan_tag_subdirectories(item, user_id)
+                continue
+
+            # Fall back to matching the directory name against usernames
+            # (raw or secure_filename form).
+            username_user_id = self._username_to_id.get(item.name)
+            if username_user_id:
+                self._scan_directory_for_user(item, username_user_id)
+                self._scan_tag_subdirectories(item, username_user_id)
             elif item.name.startswith('user'):
                 self.logger.warning(f"Found user directory '{item.name}' but user ID {user_id} is not valid")
 
@@ -175,12 +189,6 @@ class FileMonitor:
         else:
             self.logger.warning(f"Configured default username '{default_username}' is not valid")
 
-    def _is_user_directory(self, dirname):
-        """Check if a directory name corresponds to a user directory."""
-        if self._extract_user_id_from_dirname(dirname) is not None:
-            return True
-        return dirname in self._username_to_id
-
     def _scan_tag_subdirectories(self, directory, user_id):
         """Scan subdirectories that match auto-process tag folders."""
         if not directory.exists():
@@ -194,8 +202,8 @@ class FileMonitor:
                 if not item.is_dir():
                     continue
 
-                # Skip hidden dirs and user directories (e.g., user123, or username dirs)
-                if item.name.startswith('.') or self._is_user_directory(item.name):
+                # Skip hidden dirs and user directories (e.g., user123)
+                if item.name.startswith('.') or self._extract_user_id_from_dirname(item.name) is not None:
                     continue
 
                 # Look up matching auto-process tag

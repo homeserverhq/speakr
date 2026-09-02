@@ -520,6 +520,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             const asrLanguage = ref('');
             const asrMinSpeakers = ref('');
             const asrMaxSpeakers = ref('');
+            // Recorder-side transcription hints (#375): the in-app recorder
+            // has its own asr* option refs (separate from the upload modal's
+            // upload* refs) so a recording in progress keeps its options when
+            // the upload UI state changes.
+            const asrInitialPrompt = ref('');
+            const asrHotwords = ref('');
+            const asrTranscriptionModel = ref('');  // Per-recording model override (#266 parity with upload)
             const audioContext = ref(null);
             const analyser = ref(null);
             const micAnalyser = ref(null);
@@ -617,9 +624,66 @@ document.addEventListener('DOMContentLoaded', async () => {
                 uploadInitialPrompt.value = tpl.template || '';
                 uploadHotwords.value = tpl.hotwords || '';
             };
+            // Same picker for the in-app recorder's Advanced ASR Options,
+            // which use the recorder-side asr* refs (#375).
+            const applyInitialPromptTemplateToRecording = (id) => {
+                const tpl = initialPromptTemplates.value.find(t => String(t.id) === String(id));
+                if (!tpl) return;
+                asrInitialPrompt.value = tpl.template || '';
+                asrHotwords.value = tpl.hotwords || '';
+            };
             // Detail-view popover showing which hotwords/initial-prompt a
             // recording actually used (#309).
             const showHintsPopover = ref(false);
+            // Inline position overrides for the hints popover. The popover is
+            // anchored `absolute left-0 top-full` to its chip, so when the chip
+            // sits near the right viewport edge (or the prompt text is long)
+            // the panel would clip off-screen. On open we measure and clamp:
+            // shift left to stay inside the right edge, flip above the chip
+            // when there is clearly more room there, and cap height with
+            // internal scrolling otherwise.
+            const hintsPopoverStyle = ref({});
+            const toggleHintsPopover = (event) => {
+                if (showHintsPopover.value) {
+                    showHintsPopover.value = false;
+                    return;
+                }
+                const btn = event.currentTarget;
+                hintsPopoverStyle.value = {};
+                showHintsPopover.value = true;
+                nextTick(() => {
+                    const pop = btn.closest('.relative')?.querySelector('.hints-popover');
+                    if (!pop) return;
+                    const margin = 8;
+                    const rect = pop.getBoundingClientRect();
+                    const btnRect = btn.getBoundingClientRect();
+                    const style = {};
+
+                    const overflowRight = rect.right - (window.innerWidth - margin);
+                    if (overflowRight > 0) {
+                        // Never shift so far that the left edge leaves the viewport.
+                        const shift = Math.min(overflowRight, Math.max(rect.left - margin, 0));
+                        style.transform = `translateX(-${Math.round(shift)}px)`;
+                    }
+
+                    const spaceBelow = window.innerHeight - margin - rect.top;
+                    const spaceAbove = btnRect.top - margin;
+                    if (rect.height > spaceBelow) {
+                        if (spaceBelow < 120 && spaceAbove > spaceBelow) {
+                            style.top = 'auto';
+                            style.bottom = '100%';
+                            style.marginTop = '0';
+                            style.marginBottom = '0.25rem';
+                            style.maxHeight = `${Math.floor(spaceAbove)}px`;
+                        } else {
+                            style.maxHeight = `${Math.floor(spaceBelow)}px`;
+                        }
+                        style.overflowY = 'auto';
+                    }
+
+                    hintsPopoverStyle.value = style;
+                });
+            };
             const uploadTranscriptionModel = ref('');
             const uploadPromptVariables = reactive({});  // {variableName: value}
             const showPromptVariablesPanel = ref(true);  // expander state
@@ -1356,6 +1420,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const useAsrEndpoint = ref(false);
             const connectorSupportsDiarization = ref(false);  // Connector capability for diarization UI
             const connectorSupportsSpeakerCount = ref(false);  // Connector capability for min/max speakers
+            const connectorSupportsExactSpeakerCount = ref(false); // Connector accepts exactly-N speakers only (#362)
+            const speakerCountMode = ref('range');           // User pref: 'range' (min/max) or 'single' (one count)
             const connectorSupportsHotwords = ref(false);     // Connector accepts hotword/keyword biasing
             const connectorSupportsInitialPrompt = ref(false); // Connector accepts initial prompt / context hint
             const showTimestampsSimpleView = ref(false);     // User pref: display timestamps in simple view
@@ -1695,7 +1761,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 maxConcurrentUploads, recordingDisclaimer, showRecordingDisclaimerModal, pendingRecordingMode,
                 uploadDisclaimer, showUploadDisclaimerModal,
                 customBanner, showBanner,
-                showAdvancedOptions, userTranscriptionLanguage, uploadLanguage, uploadMinSpeakers, uploadMaxSpeakers, uploadHotwords, uploadInitialPrompt, initialPromptTemplates, applyInitialPromptTemplate, showHintsPopover, uploadTranscriptionModel, uploadPromptVariables, showPromptVariablesPanel, selectedPromptVariables, reprocessAvailableVariables, transcriptionModelOptions,
+                showAdvancedOptions, userTranscriptionLanguage, uploadLanguage, uploadMinSpeakers, uploadMaxSpeakers, uploadHotwords, uploadInitialPrompt, initialPromptTemplates, applyInitialPromptTemplate, showHintsPopover, hintsPopoverStyle, toggleHintsPopover, uploadTranscriptionModel, uploadPromptVariables, showPromptVariablesPanel, selectedPromptVariables, reprocessAvailableVariables, transcriptionModelOptions,
                 availableTags, selectedTagIds, uploadTagSearchFilter,
                 availableFolders, selectedFolderId, foldersEnabled, filterFolder,
 
@@ -1706,7 +1772,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 recordSystemVideo, recordingVideoActive,
                 inputAudioDevices, selectedMicDeviceId, selectedSecondaryDeviceId, refreshInputAudioDevices,
                 platformInfo, audioCaps, helpModalOsTab, virtualAudioDevices, refreshVirtualAudioDevices,
-                asrLanguage, asrMinSpeakers, asrMaxSpeakers,
+                asrLanguage, asrMinSpeakers, asrMaxSpeakers, asrTranscriptionModel,
+                asrInitialPrompt, asrHotwords, applyInitialPromptTemplateToRecording,
                 audioContext, analyser, micAnalyser, systemAnalyser, visualizer, micVisualizer,
                 systemVisualizer, animationFrameId, recordingMode, activeStreams,
                 wakeLock, recordingNotification, isPageVisible,
@@ -1790,7 +1857,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 openAsrDropdownIndex,
 
                 // App Config
-                useAsrEndpoint, connectorSupportsDiarization, connectorSupportsSpeakerCount, connectorSupportsHotwords, connectorSupportsInitialPrompt, showTimestampsSimpleView, editorAutosave, audioPlayerPosition, formatTimestamp, currentUserName, canDeleteRecordings, enableInternalSharing, enableArchiveToggle, showUsernamesInUI,
+                useAsrEndpoint, connectorSupportsDiarization, connectorSupportsSpeakerCount, connectorSupportsExactSpeakerCount, speakerCountMode, connectorSupportsHotwords, connectorSupportsInitialPrompt, showTimestampsSimpleView, editorAutosave, audioPlayerPosition, formatTimestamp, currentUserName, canDeleteRecordings, enableInternalSharing, enableArchiveToggle, showUsernamesInUI,
 
                 // Internal Sharing
                 showUnifiedShareModal, internalShareUserSearch, internalShareSearchResults,
@@ -2409,6 +2476,29 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const uploadComposable = useUpload(state, utils);
 
+            // --- Inline tag/folder creation from the upload dialog ---
+            // Opens the shared organizer modals (organizer-modals.js standalone
+            // mode) and applies the created entity to the current selection.
+            const createTagFromUploadSearch = () => {
+                if (!window.SpeakrOrganizer) return;
+                window.SpeakrOrganizer.openTagCreate({
+                    name: (uploadTagSearchFilter.value || '').trim(),
+                    onSaved: async (tag) => {
+                        await recordingsComposable.loadTags();
+                        uploadComposable.addTagToSelection(tag.id);
+                        uploadTagSearchFilter.value = '';
+                    },
+                });
+            };
+            const createFolderFromUpload = () => {
+                if (!window.SpeakrOrganizer) return;
+                window.SpeakrOrganizer.openFolderCreate({
+                    onSaved: async (folder) => {
+                        await recordingsComposable.loadFolders();
+                        selectedFolderId.value = folder.id;
+                    },
+                });
+            };
             // Upload disclaimer handlers
             const acceptUploadDisclaimer = () => {
                 showUploadDisclaimerModal.value = false;
@@ -2421,6 +2511,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const cancelUploadDisclaimer = () => {
                 showUploadDisclaimerModal.value = false;
+                uploadComposable.cancelPendingUploadClose();
             };
 
             // Add startUpload to utils for audio composable to use
@@ -2727,55 +2818,59 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ];
             });
 
-            // Language options for ASR: the full Whisper language set (the
-            // old hardcoded 11-language list locked out every other
-            // supported language, issue #359). Labels come from
-            // Intl.DisplayNames so they render localized without needing
-            // translation keys for ~100 languages.
-            const WHISPER_LANGUAGE_CODES = [
-                'en', 'zh', 'de', 'es', 'ru', 'ko', 'fr', 'ja', 'pt', 'tr', 'pl', 'ca',
-                'nl', 'ar', 'sv', 'it', 'id', 'hi', 'fi', 'vi', 'he', 'uk', 'el', 'ms',
-                'cs', 'ro', 'da', 'hu', 'ta', 'no', 'th', 'ur', 'hr', 'bg', 'lt', 'la',
-                'mi', 'ml', 'cy', 'sk', 'te', 'fa', 'lv', 'bn', 'sr', 'az', 'sl', 'kn',
-                'et', 'mk', 'br', 'eu', 'is', 'hy', 'ne', 'mn', 'bs', 'kk', 'sq', 'sw',
-                'gl', 'mr', 'pa', 'si', 'km', 'sn', 'yo', 'so', 'af', 'oc', 'ka', 'be',
-                'tg', 'sd', 'gu', 'am', 'yi', 'lo', 'uz', 'fo', 'ht', 'ps', 'tk', 'nn',
-                'mt', 'sa', 'lb', 'my', 'bo', 'tl', 'mg', 'as', 'tt', 'haw', 'ln', 'ha',
-                'ba', 'jw', 'su', 'yue'
-            ];
-            // Codes Intl.DisplayNames can't resolve (or resolves under a
-            // different ISO tag than Whisper uses).
-            const WHISPER_LANGUAGE_LABEL_OVERRIDES = {
-                jw: 'jv',   // Whisper uses 'jw' for Javanese (ISO is 'jv')
-            };
-            const WHISPER_LANGUAGE_FALLBACK_NAMES = {
-                haw: 'Hawaiian',
-                yue: 'Cantonese',
-                ba: 'Bashkir',   // some ICU builds return the bare code
-                bo: 'Tibetan',
-            };
+            // Language options for ASR: the full Whisper language set with
+            // localized labels, from the shared asr-languages.js module
+            // (also feeds the tag/folder modals' Default Language selects).
             const languageOptions = computed(() => {
-                const uiLocale = (window.i18n && window.i18n.currentLocale) || 'en';
-                let displayNames = null;
-                try {
-                    displayNames = new Intl.DisplayNames([uiLocale, 'en'], { type: 'language' });
-                } catch (e) { /* very old browsers: fall back to raw codes */ }
-                const options = WHISPER_LANGUAGE_CODES.map(code => {
-                    const lookup = WHISPER_LANGUAGE_LABEL_OVERRIDES[code] || code;
-                    let label = null;
-                    if (displayNames) {
-                        try {
-                            const name = displayNames.of(lookup);
-                            // DisplayNames echoes back unknown codes; treat that as a miss
-                            if (name && name !== lookup) label = name;
-                        } catch (e) { /* invalid tag for this engine */ }
-                    }
-                    if (!label) label = WHISPER_LANGUAGE_FALLBACK_NAMES[code] || code;
-                    label = label.charAt(0).toLocaleUpperCase(uiLocale) + label.slice(1);
-                    return { value: code, label };
-                });
-                options.sort((a, b) => a.label.localeCompare(b.label, uiLocale));
+                const options = window.SpeakrASRLanguages
+                    ? window.SpeakrASRLanguages.buildOptions((window.i18n && window.i18n.currentLocale) || 'en')
+                    : [];
                 return [{ value: '', label: t('form.autoDetect') }, ...options];
+            });
+
+            // --- Speaker count entry (#362) ---
+            // Canonical storage is always (min, max); a single count N is
+            // min == max == N. exactSpeakerEntry decides which editor renders:
+            // exact-only connectors force the single field, range connectors
+            // follow the user's persisted toggle.
+            const exactSpeakerEntry = computed(() =>
+                (connectorSupportsExactSpeakerCount.value && !connectorSupportsSpeakerCount.value)
+                || speakerCountMode.value === 'single');
+
+            const setSpeakerCountMode = async (mode) => {
+                speakerCountMode.value = mode;
+                try {
+                    await fetch('/api/user/preferences', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken.value },
+                        body: JSON.stringify({ speaker_count_mode: mode }),
+                    });
+                } catch (e) { /* non-fatal; the toggle still works this session */ }
+            };
+
+            const makeExactSpeakers = (minRef, maxRef) => computed({
+                get: () => {
+                    const mn = minRef.value, mx = maxRef.value;
+                    return (mn && mn === mx) ? mn : (mx || mn || '');
+                },
+                set: (v) => {
+                    const n = v === '' || v === null ? '' : Number(v);
+                    minRef.value = n;
+                    maxRef.value = n;
+                },
+            });
+            const uploadSpeakersExact = makeExactSpeakers(uploadMinSpeakers, uploadMaxSpeakers);
+            const asrSpeakersExact = makeExactSpeakers(asrMinSpeakers, asrMaxSpeakers);
+            const reprocessSpeakersExact = computed({
+                get: () => {
+                    const mn = asrReprocessOptions.min_speakers, mx = asrReprocessOptions.max_speakers;
+                    return (mn && mn === mx) ? mn : (mx || mn || '');
+                },
+                set: (v) => {
+                    const n = v === '' || v === null ? null : Number(v);
+                    asrReprocessOptions.min_speakers = n;
+                    asrReprocessOptions.max_speakers = n;
+                },
             });
 
             // Recording metadata for sidebar
@@ -3365,6 +3460,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 );
             });
 
+            // Save is also valid with no names when per-segment edits are
+            // staged (speaker reassignments / text edits set
+            // editedTranscriptData and are persisted by the same button).
+            const canSaveSpeakerEdits = computed(() => {
+                return hasSpeakerNames.value || editedTranscriptData.value !== null;
+            });
+
             // Tags with custom prompts for reprocess modal
             const tagsWithCustomPrompts = computed(() => {
                 return availableTags.value.filter(tag => tag.custom_prompt && tag.custom_prompt.trim() !== '');
@@ -3673,6 +3775,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     useAsrEndpoint.value = appElement.dataset.useAsrEndpoint === 'True';
                     connectorSupportsDiarization.value = appElement.dataset.connectorSupportsDiarization === 'True';
                     connectorSupportsSpeakerCount.value = appElement.dataset.connectorSupportsSpeakerCount === 'True';
+                    connectorSupportsExactSpeakerCount.value = appElement.dataset.connectorSupportsExactSpeakerCount === 'True';
+                    speakerCountMode.value = appElement.dataset.speakerCountMode === 'single' ? 'single' : 'range';
                     connectorSupportsHotwords.value = appElement.dataset.connectorSupportsHotwords === 'True';
                     connectorSupportsInitialPrompt.value = appElement.dataset.connectorSupportsInitialPrompt === 'True';
                     showTimestampsSimpleView.value = appElement.dataset.showTimestampsSimpleView === 'True';
@@ -3806,10 +3910,38 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Deep link to a specific recording: /recordings/<id> (#301).
                 // Captured before load; selected once recordings are in.
                 let deepLinkRecordingId = null;
+                // Optional ?t=<seconds> seek (Inquire citations link to the
+                // cited moment): after the recording opens, seek the main
+                // player there and start playback.
+                let deepLinkSeekSeconds = null;
                 try {
                     const m = window.location.pathname.match(/^\/recordings\/(\d+)\/?$/);
                     if (m) deepLinkRecordingId = m[1];
+                    const t = new URLSearchParams(window.location.search).get('t');
+                    if (m && t !== null && /^\d+(\.\d+)?$/.test(t)) deepLinkSeekSeconds = parseFloat(t);
                 } catch (_) { /* best-effort */ }
+
+                const applyDeepLinkSeek = (seconds) => {
+                    const startedAt = Date.now();
+                    const attempt = () => {
+                        // The detail view's player is the media element whose
+                        // source is the recording's /audio/ stream.
+                        const media = [...document.querySelectorAll('audio, video')]
+                            .find(el => ((el.currentSrc || el.src || '').includes('/audio/')));
+                        if (media && media.readyState >= 1) {
+                            const target = isFinite(media.duration)
+                                ? Math.min(seconds, Math.max(0, media.duration - 1))
+                                : seconds;
+                            media.currentTime = target;
+                            // Best-effort autoplay; stays paused at the right
+                            // spot if the browser blocks it.
+                            media.play().catch(() => {});
+                            return;
+                        }
+                        if (Date.now() - startedAt < 15000) setTimeout(attempt, 400);
+                    };
+                    setTimeout(attempt, 400);
+                };
 
                 // Load initial data
                 await Promise.all([
@@ -3829,6 +3961,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } else if (deepLinkRecordingId) {
                     // Honour the /recordings/<id> deep link now that data is loaded.
                     await recordingsComposable.selectRecordingById(deepLinkRecordingId);
+                    if (deepLinkSeekSeconds !== null) {
+                        applyDeepLinkSeek(deepLinkSeekSeconds);
+                    }
                 }
 
                 // Auto-retry any uploads that previously failed and were saved to
@@ -4187,6 +4322,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 removeProgressItem,
                 retryProgressItem,
                 hasSpeakerNames,
+                canSaveSpeakerEdits,
                 showDuplicatesModal,
                 videoCollapsed,
                 videoFullscreen,
@@ -4276,7 +4412,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ...foldersComposable,
                 ...pwaComposable,
                 ...bulkSelectionComposable,
-                ...bulkOperationsComposable
+                ...bulkOperationsComposable,
+
+                // Inline tag/folder creation (upload dialog)
+                createTagFromUploadSearch,
+                createFolderFromUpload,
+
+                // Speaker count entry (#362)
+                exactSpeakerEntry, setSpeakerCountMode,
+                uploadSpeakersExact, asrSpeakersExact, reprocessSpeakersExact
             };
         },
         delimiters: ['${', '}']

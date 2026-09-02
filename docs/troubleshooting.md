@@ -10,6 +10,14 @@ When your Docker container refuses to start or immediately exits, the problem us
 
 If you see database connection errors, ensure your database file has proper permissions. The container runs as a specific user and needs read/write access to the data directories. On Linux systems, you might need to adjust ownership with `chown -R 1000:1000 ./uploads ./instance`.
 
+### "table user_new already exists" on Startup (Fixed in v0.10.5-alpha)
+
+Installations upgraded from a version older than v0.5.9-alpha may log `Could not migrate password column to nullable (may cause issues with SSO): table user_new already exists` on every startup, repeated once per worker process. The application otherwise runs normally, and no data is lost.
+
+The cause was a migration that rebuilt the whole user table to make one column nullable for SSO support. On those older databases the copy step failed, and because SQLite's Python driver does not wrap schema changes in a transaction, the temporary `user_new` table survived and blocked every later attempt. The practical consequence is that `user.password` stayed `NOT NULL`, so accounts without a local password, meaning SSO accounts, could not be created.
+
+Upgrade to v0.10.5-alpha or later. The migration now alters only the column it needs and removes the leftover table for you. **Do not delete `user_new` manually on an older version.** Doing so lets the old migration complete, and it rebuilds the user table from a column list frozen years earlier, discarding later settings such as token budgets, verification state and transcription hints.
+
 ### Can't Access the Web Interface
 
 When Speakr starts successfully but you can't reach the web interface, network configuration is usually the issue. First, verify the container is actually running with `docker ps`. Check that port 8899 is properly mapped - the docker-compose file should show `"8899:8899"` in the ports section.
@@ -143,6 +151,10 @@ If the interface shows blank panels or raw translation keys (console messages li
 
 From v0.10.3-alpha onward this heals itself: each release installs a service worker with its own cache namespace, static assets are revalidated on load, and translation files are always fetched fresh, so an image upgrade can no longer strand a stale app shell. Upgrades from versions before v0.10.3-alpha may still need the one-time manual clear described above.
 
+### App Unresponsive While Media Plays or Chats Stream
+
+Since v0.10.4-alpha the stock image runs threaded gunicorn workers (3 processes x 8 threads), so streaming responses such as chat answers and audio or video playback no longer occupy one of only three request slots. If you override the container command, adopt `--worker-class gthread --threads 8` to get the same behavior. Behind nginx, `proxy_buffering on` helps further: nginx absorbs each response at local speed and feeds slow clients itself, freeing the application thread in seconds rather than for the duration of playback.
+
 ## Feature-Specific Issues
 
 ### Chat Responses End Mid-Sentence
@@ -175,6 +187,7 @@ whisper-asr:
   image: learnedmachine/whisperx-asr-service:latest
   environment:
     - TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=true
+    - HF_HOME=/.cache  # keep model downloads in the cache volume
     # ... your other environment variables
 ```
 
@@ -188,6 +201,21 @@ docker compose up -d whisper-asr
 ```
 
 For more details, see the [WhisperX issue discussion](https://github.com/m-bain/whisperX/issues/1304).
+
+### Diarization Fails After Enabling Offline Mode (WhisperX ASR Service)
+
+If speaker diarization worked while online but fails with an error like this after setting `HF_HUB_OFFLINE=1`:
+
+```
+Speaker diarization failed: An error happened while trying to locate the file
+on the Hub and we cannot find the requested files in the local cache.
+```
+
+the pyannote diarization model was never stored in the cache volume. Unless `HF_HOME` is set, Hugging Face downloads go to `/root/.cache/huggingface` inside the container filesystem, so the model silently disappears whenever the container is recreated. Recreating the container is exactly what enabling offline mode requires, which is when the missing model surfaces.
+
+**Solution**: Add `HF_HOME=/.cache` to the ASR container's environment so it points at the mounted cache volume, remove `HF_HUB_OFFLINE=1` for now, and recreate the container. Run one transcription with diarization while online so the model downloads into the volume, then re-enable `HF_HUB_OFFLINE=1`. You can confirm the model is in the volume by checking for `/.cache/hub/models--pyannote--speaker-diarization-community-1` inside the container.
+
+Images newer than v0.4.0 of the WhisperX ASR service set `HF_HOME=/.cache` by default, so this only affects v0.4.0 and earlier deployments configured without it.
 
 ### WhisperX Shows UNKNOWN_SPEAKER
 

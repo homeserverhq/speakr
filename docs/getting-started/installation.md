@@ -391,7 +391,7 @@ AUTO_PROCESS_WATCH_DIR=/data/auto-process
 AUTO_PROCESS_CHECK_INTERVAL=30
 ```
 
-When enabled, Speakr checks the watch directory every 30 seconds for new audio files. Any files found are automatically moved to the uploads directory and processed using your configured transcription settings. The `admin_only` mode assigns all processed files to the admin user, but you can also configure it for multi-user scenarios with separate directories for each user.
+When enabled, Speakr checks the watch directory every 30 seconds for new audio files. Any files found are automatically moved to the uploads directory and processed using your configured transcription settings. The `admin_only` mode assigns all processed files to the admin user, but you can also configure it for multi-user scenarios with separate directories for each user (`AUTO_PROCESS_MODE=user_directories`). Per-user subfolders may be named after the user id (`user123` or `123`) or after the username itself, mirroring the naming of the per-user export folders.
 
 To use this feature, you'll need to mount an additional volume in your Docker Compose configuration, which we'll cover in the next steps.
 
@@ -609,6 +609,8 @@ docker compose up -d
 curl http://localhost:9000/health
 ```
 
+Prebuilt images are also published per release, so you can pull instead of building: `learnedmachine/whisperx-asr-service:latest` covers Pascal through Hopper GPUs as well as CPU, and `learnedmachine/whisperx-asr-service:blackwell` covers RTX 50xx cards (the plain `:blackwell` tag is available as of v0.4.0). To use one, replace the `build:` section in the compose snippet below with the corresponding `image:` line.
+
 See the [WhisperX ASR Service README](https://github.com/murtaza-nasir/whisperx-asr-service#readme) for detailed configuration options, troubleshooting, and performance tuning.
 
 !!! warning "PyTorch 2.6 Compatibility"
@@ -657,7 +659,18 @@ services:
       - COMPUTE_TYPE=float16
       - BATCH_SIZE=16
       - HF_TOKEN=your_huggingface_token_here
+      # Store all Hugging Face downloads (including the pyannote diarization
+      # model) in the cache volume below. Without this, the diarization model
+      # is cached inside the container filesystem and is lost whenever the
+      # container is recreated.
+      - HF_HOME=/.cache
       - TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=true  # Required for PyTorch 2.6+
+      # Uncomment after one successful online run with diarization to run
+      # fully offline (models must already be in the cache volume):
+      # - HF_HUB_OFFLINE=1
+      # Unload idle models from VRAM after this many seconds
+      # (0 = keep resident, the default):
+      # - MODEL_KEEP_ALIVE_SECONDS=3600
     deploy:
       resources:
         reservations:

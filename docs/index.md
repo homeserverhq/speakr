@@ -3,7 +3,7 @@
 Speakr is a powerful self-hosted transcription platform that helps you capture, transcribe, and understand your audio content. Whether you're recording meetings, interviews, lectures, or personal notes, Speakr transforms spoken words into valuable, searchable knowledge.
 
 <div style="max-width: 80%; margin: 2em auto;">
-  <img src="assets/images/screenshots/main-view-video.png" alt="Main Interface" style="border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+  <img src="assets/images/screenshots/main-view.png" alt="Main Interface" style="border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
 </div>
 
 !!! success "Latest Release: v0.10.2-alpha — security fixes, Flask 3.1, and new features (recommended for all deployments)"
@@ -72,7 +72,7 @@ Speakr takes a recording from raw audio to organized, searchable, shareable know
     <ul>
       <li><a href="features#multi-engine-support">Bring your own engine: WhisperX, OpenAI, Mistral, custom ASR</a></li>
       <li><a href="features#speaker-diarization">Speaker diarization</a> and <a href="features#speaker-management">voice profiles</a> (WhisperX backend)</li>
-      <li><a href="features#language-support">Auto-detect plus 11 common languages</a></li>
+      <li><a href="features#language-support">Auto-detect plus the full Whisper language list</a></li>
       <li>Custom vocabulary and hotwords (most effective with WhisperX)</li>
     </ul>
   </div>

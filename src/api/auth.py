@@ -28,6 +28,7 @@ from src.auth.sso import (
     create_or_update_sso_user,
     is_domain_allowed,
     link_sso_to_existing_user,
+    resolve_userinfo,
     update_user_profile_from_claims,
 )
 from src.services.email import (
@@ -290,7 +291,7 @@ def sso_callback():
 
     try:
         token = oauth.sso.authorize_access_token()
-        userinfo = token.get('userinfo') or oauth.sso.userinfo()
+        userinfo = resolve_userinfo(oauth, token)
     except Exception as e:
         current_app.logger.warning(f"SSO callback error: {e}")
         flash('SSO login failed. Please try again.', 'danger')
@@ -656,6 +657,12 @@ def account():
             current_user.summary_prompt = summary_prompt_text if summary_prompt_text else None
             # Handle event extraction setting
             current_user.extract_events = 'extract_events' in request.form
+            # Inquire content availability (agentic inquire). Gated on the
+            # marker field so form submissions without this section cannot
+            # clobber the settings (same reasoning as audio_player_position).
+            if 'inquire_privacy_section' in request.form:
+                current_user.inquire_allow_summaries = 'inquire_allow_summaries' in request.form
+                current_user.inquire_allow_notes = 'inquire_allow_notes' in request.form
             # Handle transcription hints
             hotwords = request.form.get('transcription_hotwords')
             current_user.transcription_hotwords = hotwords if hotwords else None
@@ -795,6 +802,9 @@ def account():
     # Get user's UI language preference
     user_language = current_user.ui_language if current_user.ui_language else 'en'
 
+    from src.services.inquire_agent import get_availability as _get_inquire_availability
+    _inquire_availability = _get_inquire_availability(current_user)
+
     return render_template('account.html',
                            title='Account',
                            default_summary_prompt_text=default_summary_prompt_text,
@@ -820,6 +830,8 @@ def account():
                            auto_speaker_labelling_threshold=current_user.auto_speaker_labelling_threshold or 'medium',
                            admin_disabled_auto_summarization=admin_disabled_auto_summarization,
                            auto_summarization=current_user.auto_summarization if current_user.auto_summarization is not None else True,
+                           inquire_allow_summaries=_inquire_availability['summaries'],
+                           inquire_allow_notes=_inquire_availability['notes'],
                            user_language=user_language,
                            enable_auto_export=ENABLE_AUTO_EXPORT,
                            enable_auto_processing=os.environ.get('ENABLE_AUTO_PROCESSING', 'false').lower() == 'true')

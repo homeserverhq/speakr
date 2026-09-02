@@ -115,12 +115,15 @@
     "apiTokens": "API Tokens",
     "customPrompts": "Custom Prompts",
     "folderManagement": "Folder Management",
+    "foldersSubtab": "Folders",
     "namingTemplates": "Naming",
     "preferences": "Preferences",
     "promptOptions": "Prompt Options",
     "sharedTranscripts": "Shared Transcripts",
     "speakersManagement": "Speakers Management",
     "tagManagement": "Tag Management",
+    "tagsAndFolders": "Tags & Folders",
+    "tagsSubtab": "Tags",
     "templates": "Templates",
     "transcriptTemplates": "Transcript Templates",
     "webhooks": "Webhooks",
@@ -147,6 +150,9 @@
     "budgetWarnings": "Budget Warnings",
     "characters": "characters",
     "chunkSize": "Chunk Size",
+    "chunkingLegacy": "Character windows (legacy)",
+    "chunkingSegmentAware": "Segment-aware (speaker turns + timestamps)",
+    "chunkingStrategy": "Chunking",
     "complete": "complete",
     "completedRecordings": "Completed",
     "confirmPasswordLabel": "Confirm Password",
@@ -419,7 +425,8 @@
     "whatAreActionItems": "What are the action items?",
     "whatAreKeyPoints": "What are the key points?",
     "whatWasDiscussed": "What was discussed?",
-    "whoSaidWhat": "Who said what?"
+    "whoSaidWhat": "Who said what?",
+    "playFromHere": "Play from here"
   },
   "colorScheme": {
     "chooseRecording": "Choose a recording from the sidebar to view its transcription and summary",
@@ -883,7 +890,12 @@
     "transcriptionLanguage": "Transcription Language",
     "yourFullName": "Your full name",
     "transcriptionModel": "Transcription model",
-    "useResolvedDefault": "(use tag/folder/global default)"
+    "useResolvedDefault": "(use tag/folder/global default)",
+    "newFolderOption": "New folder",
+    "speakers": "Speakers",
+    "speakerModeRange": "Range",
+    "speakerModeExact": "Exact",
+    "numberOfSpeakers": "Number of speakers"
   },
   "groups": {
     "addMembers": "Add members...",
@@ -1039,7 +1051,9 @@
     "uploadingRecording": "Uploading recording…",
     "whatWillHappen": "What will happen?",
     "whyNotWorking": "Why isn't it working?",
-    "youHaveXSpeakers": "You have {{count}} speakers, but only 16 unique colors are available. Colors will repeat after the 16th speaker."
+    "youHaveXSpeakers": "You have {{count}} speakers, but only 16 unique colors are available. Colors will repeat after the 16th speaker.",
+    "createTagNamed": "Create tag \"{{name}}\"",
+    "newTag": "New tag"
   },
   "incognito": {
     "audioNotStored": "Audio not stored in incognito mode",
@@ -1078,6 +1092,7 @@
     "placeholder": "Ask questions about your filtered transcriptions...",
     "selectFilters": "Select filters on the left to narrow down your transcriptions, then ask questions to get insights from your recordings.",
     "sendHint": "Press Enter to send • Ctrl+Enter for new line",
+    "sources": "Sources",
     "speakerRequirement": "Speaker identification requires recordings with multiple speakers",
     "speakers": "Speakers",
     "speakersCount": "speakers",
@@ -1085,6 +1100,14 @@
     "tagsCount": "tags",
     "title": "Inquire",
     "to": "To"
+  },
+  "inquirePrivacy": {
+    "title": "Inquire Privacy",
+    "description": "Choose what the Inquire AI may read when answering your questions. Transcripts are always available; everything else is up to you.",
+    "summariesLabel": "Allow access to summaries",
+    "summariesHelp": "Lets Inquire read your recordings' AI summaries to survey long recordings quickly.",
+    "notesLabel": "Allow access to your notes",
+    "notesHelp": "Your private notes stay unavailable unless you enable this. Only your own notes are ever used, never notes on recordings shared with you."
   },
   "languages": {
     "ar": "Arabic",
@@ -1249,6 +1272,7 @@
     "adminDashboard": "Admin Dashboard",
     "darkMode": "Dark Mode",
     "groupManagement": "Group Management",
+    "helpCenter": "Help Center",
     "home": "Home",
     "language": "Language",
     "lightMode": "Light Mode",
@@ -1764,7 +1788,8 @@
     "keepAudioOnlyLargerAllowed": "Larger uploads allowed",
     "largeVideoNotice": "Large video file. Upload will proceed; transcription may take longer and uses chunking on the server.",
     "options": "Options",
-    "transcriptionOptions": "Transcription Options"
+    "transcriptionOptions": "Transcription Options",
+    "uploadAndAddMore": "Upload & Add More"
   },
   "uploadProgress": {
     "title": "Upload Progress"
@@ -1962,5 +1987,12 @@
     "warningSummary": "This will overwrite any manual edits to titles and summaries.",
     "warningTranscription": "This will overwrite all transcriptions, titles, and summaries. Manual edits will be lost.",
     "whatToReprocess": "What do you want to reprocess?"
+  },
+  "emptyState": {
+    "readyToCapture": "Ready to capture",
+    "readyBody": "Drop an audio file, record from your microphone, or capture system audio. Speakr turns it into a searchable transcript with summary and chat.",
+    "newRecording": "New recording",
+    "selectRecording": "Select a recording",
+    "selectBody": "Pick one from the sidebar or start a new recording."
   }
 }
