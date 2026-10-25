@@ -4,13 +4,13 @@
 // each tab a `#content-*` panel with its own `.tab-scroll` scroller) and
 // /admin (a small Vue app whose tabs are driven by `activeTab`).
 
-import { go, settle, clickVisible, openRecordingByTitle, blurEmails } from '../helpers.mjs';
+import { go, settle, clickVisible, openRecordingByTitle, blurEmails, blurUrls } from '../helpers.mjs';
 
 /** A recording carrying tags, used for the localized interface shots. */
 const TAGGED_RECORDING = 'SEC/Data Science Team Updates and Announcements';
 
 /** Switch the /account page to a tab by its nav id ("prompts", "tokens", ...). */
-async function accountTab(page, name) {
+export async function accountTab(page, name) {
     await page.click(`#tab-${name}`);
     await settle(page, 900);
 }
@@ -37,7 +37,7 @@ async function scrollTabTo(page, selector, margin = 24, text = null) {
 }
 
 /** Switch the /admin Vue dashboard to one of its tabs by label text. */
-async function adminTab(page, label) {
+export async function adminTab(page, label) {
     const ok = await clickVisible(page, `nav.tabs button:has-text(${JSON.stringify(label)})`);
     if (!ok) throw new Error(`Admin tab ${label} not found`);
     await settle(page, 1500);
@@ -129,6 +129,27 @@ export default [
         description: 'Outbound webhooks on recording events',
         theme: { dark: true, scheme: 'purple' },
         run: async (page) => {
+            // The dev instance's sample endpoint points at a made-up host, so
+            // its real history is all failures. Show the same endpoint as a
+            // healthy one: the responses are fetched for real and only the
+            // health fields are changed; nothing is sent anywhere.
+            await page.route(/\/api\/v1\/webhooks(\?.*)?$/, async (route) => {
+                const res = await route.fetch();
+                const body = await res.json();
+                for (const w of body.webhooks || []) {
+                    Object.assign(w, { enabled: true, auto_paused: false, consecutive_failures: 0 });
+                }
+                await route.fulfill({ response: res, json: body });
+            });
+            await page.route(/\/api\/v1\/webhooks\/\d+\/deliveries(\?.*)?$/, async (route) => {
+                const res = await route.fetch();
+                const body = await res.json();
+                for (const d of body.deliveries || []) {
+                    Object.assign(d, { status: 'success', attempt_count: 1, response_status: 200,
+                                       response_body_preview: 'ok', error_message: null, next_retry_at: null });
+                }
+                await route.fulfill({ response: res, json: body });
+            });
             await go(page, '/account');
             await accountTab(page, 'webhooks');
             // Expand the delivery log of the first endpoint so the shot shows
@@ -185,10 +206,9 @@ export default [
         run: async (page) => {
             await go(page, '/admin', 1500);
             await adminTab(page, 'System Statistics');
-            // The budgets live below the instance-wide counters; the negative
-            // margin parks the section heading just above the frame so the
-            // whole per-user budget panel fits.
-            await scrollTabTo(page, 'h4', -60, 'Token Usage Statistics');
+            // The budgets are in the Users table at the end of the tab; the
+            // section heading sits at the top of the frame.
+            await scrollTabTo(page, 'h4', 24, 'Users');
             await blurEmails(page);
         },
     },
@@ -199,6 +219,7 @@ export default [
         run: async (page) => {
             await go(page, '/admin', 1500);
             await adminTab(page, 'Vector Store');
+            await blurUrls(page);   // internal embedding endpoint
         },
     },
     {
@@ -209,7 +230,9 @@ export default [
             await useLanguage(page, 'de');
             await go(page, '/');
             await assertLocale(page, 'de');
-            await openRecordingByTitle(page, TAGGED_RECORDING);
+            // A German-content demo recording so the title, transcript and
+            // summary match the interface language.
+            await openRecordingByTitle(page, 'Wöchentliches Team-Meeting: Produktplanung');
         },
     },
     {
@@ -220,7 +243,7 @@ export default [
             await useLanguage(page, 'zh');
             await go(page, '/');
             await assertLocale(page, 'zh');
-            await openRecordingByTitle(page, TAGGED_RECORDING);
+            await openRecordingByTitle(page, '产品发布计划周会');
         },
     },
 ];

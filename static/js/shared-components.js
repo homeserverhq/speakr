@@ -15,6 +15,7 @@ function useDarkMode() {
             document.documentElement.classList.remove('dark');
             localStorage.setItem('darkMode', 'false');
         }
+        if (window.speakrSaveTheme) window.speakrSaveTheme('darkMode');
     };
     
     const initializeDarkMode = () => {
@@ -107,6 +108,7 @@ function useColorScheme() {
     
     const selectColorScheme = (schemeId) => {
         applyColorScheme(schemeId);
+        if (window.speakrSaveTheme) window.speakrSaveTheme('colorScheme');
         const scheme = colorSchemes[isDarkMode.value ? 'dark' : 'light'].find(s => s.id === schemeId);
         if (window.showToast && scheme) {
             window.showToast(`Applied ${scheme.name} theme`, 'fa-palette');
@@ -115,6 +117,7 @@ function useColorScheme() {
     
     const resetColorScheme = () => {
         applyColorScheme('blue');
+        if (window.speakrSaveTheme) window.speakrSaveTheme('colorScheme');
         if (window.showToast) {
             const defaultScheme = colorSchemes[isDarkMode.value ? 'dark' : 'light'].find(s => s.id === 'blue');
             window.showToast(`Reset to default ${defaultScheme?.name || 'Ocean Blue'} theme`, 'fa-undo');
@@ -140,25 +143,12 @@ function useSharesModal() {
     const userShares = Vue.ref([]);
     const isLoadingShares = Vue.ref(false);
     
-    const openSharesList = async () => {
-        isLoadingShares.value = true;
-        showSharesListModal.value = true;
-        try {
-            const response = await fetch('/api/shares');
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error || 'Failed to load shared items');
-            userShares.value = data;
-        } catch (error) {
-            if (window.setGlobalError) {
-                window.setGlobalError(`Failed to load shared items: ${error.message}`);
-            } else {
-                console.error('Failed to load shared items:', error);
-            }
-        } finally {
-            isLoadingShares.value = false;
-        }
+    // The Shared Transcripts dialog lives in the main app (#416), as on the
+    // other pages that use the shared header.
+    const openSharesList = () => {
+        window.location.href = "/?open=shares";
     };
-    
+
     const closeSharesList = () => {
         showSharesListModal.value = false;
     };

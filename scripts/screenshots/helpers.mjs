@@ -35,6 +35,33 @@ export async function makeContext(browser, { dark = true, scheme = 'blue', mobil
 }
 
 /** Kill animations/transitions and hide carets so pixels are stable. */
+/**
+ * Recordings that must never appear in published screenshots (real meetings
+ * with real names). Comma-separated SPEAKR_PRIVATE_TITLES extends the list.
+ */
+export const PRIVATE_TITLES = [
+    'Unified AI Curriculum and Course Track Planning',
+    'Road Trip Reflections and Future Research Plans',
+    ...(process.env.SPEAKR_PRIVATE_TITLES || '').split(',').map((t) => t.trim()).filter(Boolean),
+];
+
+/** Remove sidebar and list rows of private recordings. Returns how many were hidden. */
+export async function hidePrivateRecordings(page) {
+    return page.evaluate((titles) => {
+        let hidden = 0;
+        for (const el of document.querySelectorAll('h4, .recording-title, [title]')) {
+            const text = (el.getAttribute('title') || el.textContent || '').trim();
+            if (!titles.some((t) => text.startsWith(t) || (text.endsWith('…') && t.startsWith(text.slice(0, -1))))) continue;
+            const row = el.closest('li, .recording-item, [data-recording-id]') || el.parentElement;
+            if (row && row.style.display !== 'none' && row.getBoundingClientRect().height > 0) {
+                row.style.display = 'none';
+                hidden++;
+            }
+        }
+        return hidden;
+    }, PRIVATE_TITLES);
+}
+
 export async function freezePage(page) {
     await page.addStyleTag({
         content: `
@@ -59,12 +86,29 @@ export async function settle(page, extraMs = 800) {
     await page.waitForTimeout(extraMs);
 }
 
-/** Log in and return a storageState the runner reuses for every shot. */
+/** Log in and return a storageState the runner reuses for every shot.
+ *
+ * SPEAKR_SESSION_COOKIE (name=value of a signed-in session) skips the login
+ * form, for instances where a session is easier to provide than a password.
+ */
 export async function login(browser) {
+    const sessionCookie = process.env.SPEAKR_SESSION_COOKIE;
+    if (sessionCookie) {
+        const at = sessionCookie.indexOf('=');
+        const url = new URL(BASE_URL);
+        return {
+            cookies: [{
+                name: sessionCookie.slice(0, at), value: sessionCookie.slice(at + 1),
+                domain: url.hostname, path: '/', httpOnly: true,
+                secure: url.protocol === 'https:', sameSite: 'Lax', expires: -1,
+            }],
+            origins: [],
+        };
+    }
     const email = process.env.SPEAKR_EMAIL;
     const password = process.env.SPEAKR_PASSWORD;
     if (!email || !password) {
-        throw new Error('Set SPEAKR_EMAIL and SPEAKR_PASSWORD in the environment');
+        throw new Error('Set SPEAKR_SESSION_COOKIE, or SPEAKR_EMAIL and SPEAKR_PASSWORD, in the environment');
     }
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
@@ -181,6 +225,30 @@ export async function blurEmails(page) {
         // inputs whose VALUE is an email (account forms)
         document.querySelectorAll('input').forEach((inp) => {
             if (emailRe.test(inp.value)) inp.style.filter = 'blur(5px)';
+        });
+    });
+    await page.waitForTimeout(200);
+}
+
+/**
+ * Blur every visible absolute URL on the page (share links carry the real
+ * deployment domain). Covers text nodes and inputs whose value is a URL.
+ */
+export async function blurUrls(page) {
+    await page.evaluate(() => {
+        const urlRe = /https?:\/\/[^\s"']+/;
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        const seen = new Set();
+        let n;
+        while ((n = walker.nextNode())) {
+            if (!urlRe.test(n.nodeValue)) continue;
+            const el = n.parentElement;
+            if (!el || seen.has(el)) continue;
+            seen.add(el);
+            el.style.filter = 'blur(5px)';
+        }
+        document.querySelectorAll('input').forEach((inp) => {
+            if (urlRe.test(inp.value)) inp.style.filter = 'blur(5px)';
         });
     });
     await page.waitForTimeout(200);

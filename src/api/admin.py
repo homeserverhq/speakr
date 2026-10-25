@@ -9,16 +9,18 @@ import json
 import time
 from datetime import datetime, timedelta
 from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify, send_file, Response, current_app
-from flask_login import login_required, current_user
+from flask_login import login_required, current_user, login_user
 from werkzeug.utils import secure_filename
 
 from src.database import db
 from src.models import *
 from src.utils import *
+from src.utils.localization import translate
 from src.services.retention import is_recording_exempt_from_deletion, get_retention_days_for_recording, process_auto_deletion
 from src.services.embeddings import EMBEDDINGS_AVAILABLE, process_recording_chunks
 from src.services.token_tracking import token_tracker
 from src.services.transcription_tracking import transcription_tracker
+from src.services.storage_quota import default_quota_mb
 from src.config.startup import get_file_monitor_functions
 
 # Create blueprint
@@ -61,7 +63,7 @@ def admin():
     ).first() is not None
 
     if not current_user.is_admin and not is_team_admin:
-        flash('You do not have permission to access the admin page.', 'danger')
+        flash(translate('server.flash.adminAccessDenied'), 'danger')
         return redirect(url_for('recordings.index'))
 
     # Redirect group admins to their dedicated management page
@@ -89,7 +91,7 @@ def group_management():
     ).first() is not None
 
     if not is_team_admin:
-        flash('You do not have permission to access group management.', 'danger')
+        flash(translate('server.flash.groupAccessDenied'), 'danger')
         return redirect(url_for('recordings.index'))
 
     # If they're a full admin, redirect to main admin dashboard
@@ -174,6 +176,7 @@ def admin_get_users():
             'can_share_publicly': user.can_share_publicly,
             'recordings_count': recordings_count,
             'storage_used': storage_used,
+            'storage_quota_mb': user.storage_quota_mb,
             'monthly_token_budget': user.monthly_token_budget,
             'current_token_usage': current_usage,
             'token_usage_percentage': round(usage_percentage, 1),
@@ -205,6 +208,11 @@ def admin_add_user():
         if field not in data:
             return jsonify({'error': f'Missing required field: {field}'}), 400
     
+    # The username column holds 20 characters; PostgreSQL refuses a longer
+    # value, which gave a 500 instead of this message
+    if not 2 <= len(str(data['username']).strip()) <= 20:
+        return jsonify({'error': 'The username must be 2 to 20 characters.'}), 400
+
     # Check if username or email already exists
     if User.query.filter_by(username=data['username']).first():
         return jsonify({'error': 'Username already exists'}), 400
@@ -212,6 +220,11 @@ def admin_add_user():
     email = User.normalize_email(data['email'])
     if User.find_by_email(email):
         return jsonify({'error': 'Email already exists'}), 400
+
+    try:
+        storage_quota = _quota_mb(data['storage_quota_mb']) if 'storage_quota_mb' in data else default_quota_mb()
+    except (TypeError, ValueError):
+        return jsonify({'error': 'The storage quota must be a positive number of MB.'}), 400
 
     # Create new user
     hashed_password = bcrypt.generate_password_hash(data['password']).decode('utf-8')
@@ -221,7 +234,8 @@ def admin_add_user():
         password=hashed_password,
         is_admin=data.get('is_admin', False),
         monthly_token_budget=data.get('monthly_token_budget'),
-        monthly_transcription_budget=data.get('monthly_transcription_budget')
+        monthly_transcription_budget=data.get('monthly_transcription_budget'),
+        storage_quota_mb=storage_quota,
     )
 
     db.session.add(new_user)
@@ -234,6 +248,7 @@ def admin_add_user():
         'is_admin': new_user.is_admin,
         'recordings_count': 0,
         'storage_used': 0,
+        'storage_quota_mb': new_user.storage_quota_mb,
         'monthly_token_budget': new_user.monthly_token_budget,
         'current_token_usage': 0,
         'token_usage_percentage': 0,
@@ -263,6 +278,8 @@ def admin_update_user(user_id):
     
     # Update user fields
     if 'username' in data and data['username'] != user.username:
+        if not 2 <= len(str(data['username']).strip()) <= 20:
+            return jsonify({'error': 'The username must be 2 to 20 characters.'}), 400
         # Check if username already exists
         if User.query.filter_by(username=data['username']).first():
             return jsonify({'error': 'Username already exists'}), 400
@@ -279,6 +296,8 @@ def admin_update_user(user_id):
     
     if 'password' in data and data['password']:
         user.password = bcrypt.generate_password_hash(data['password']).decode('utf-8')
+        # Sign the account out of every browser (#437)
+        user.end_all_sessions()
     
     if 'is_admin' in data:
         new_is_admin = bool(data['is_admin'])
@@ -309,7 +328,17 @@ def admin_update_user(user_id):
         else:
             user.monthly_transcription_budget = int(budget)
 
+    if 'storage_quota_mb' in data:
+        try:
+            user.storage_quota_mb = _quota_mb(data['storage_quota_mb'])
+        except (TypeError, ValueError):
+            return jsonify({'error': 'The storage quota must be a positive number of MB.'}), 400
+
     db.session.commit()
+    if user.id == current_user.id and data.get('password'):
+        # An administrator who sets their own password stays signed in here
+        remembered = current_app.config.get('REMEMBER_COOKIE_NAME', 'remember_token') in request.cookies
+        login_user(user, remember=remembered)
 
     # Get recordings count and storage used
     recordings_count = len(user.recordings)
@@ -331,6 +360,7 @@ def admin_update_user(user_id):
         'can_share_publicly': user.can_share_publicly,
         'recordings_count': recordings_count,
         'storage_used': storage_used,
+        'storage_quota_mb': user.storage_quota_mb,
         'monthly_token_budget': user.monthly_token_budget,
         'current_token_usage': current_usage,
         'token_usage_percentage': round(usage_percentage, 1),
@@ -420,6 +450,16 @@ def admin_toggle_admin(user_id):
 
 
 
+def _quota_mb(value):
+    """A storage quota from the admin form: a positive number of MB, or no limit."""
+    if value in (None, '', 0, '0'):
+        return None
+    value = int(value)
+    if value < 0:
+        raise ValueError('storage_quota_mb must be positive')
+    return value
+
+
 @admin_bp.route('/admin/stats', methods=['GET'])
 @login_required
 def admin_get_stats():
@@ -436,24 +476,55 @@ def admin_get_stats():
     # Get recordings by status
     completed_recordings = Recording.query.filter_by(status='COMPLETED').count()
     processing_recordings = Recording.query.filter(Recording.status.in_(['PROCESSING', 'SUMMARIZING'])).count()
+    transcribing_recordings = Recording.query.filter_by(status='PROCESSING').count()
+    summarizing_recordings = Recording.query.filter_by(status='SUMMARIZING').count()
     pending_recordings = Recording.query.filter_by(status='PENDING').count()
     failed_recordings = Recording.query.filter_by(status='FAILED').count()
+    audio_removed_recordings = Recording.query.filter(Recording.audio_deleted_at.isnot(None)).count()
+    archived_recordings = Recording.query.filter(Recording.is_archived.is_(True)).count()
+
+    # The job queue: what is waiting, running, and what failed this week.
+    from datetime import datetime as _dt, timedelta as _td
+    from src.models.processing_job import ProcessingJob
+    jobs_queued = ProcessingJob.query.filter_by(status='queued').count()
+    jobs_running = ProcessingJob.query.filter_by(status='processing').count()
+    jobs_failed_7d = ProcessingJob.query.filter(
+        ProcessingJob.status == 'failed',
+        db.func.coalesce(ProcessingJob.completed_at, ProcessingJob.created_at) >= _dt.utcnow() - _td(days=7),
+    ).count()
     
     # Get total storage used (exclude retention-removed audio — file gone but
     # file_size still recorded; see the user-list query above).
     total_storage = db.session.query(db.func.sum(Recording.file_size)) \
         .filter(Recording.audio_deleted_at.is_(None)).scalar() or 0
 
-    # Get top users by storage
+    # Get top users by storage.
+    #
+    # Two things here are deliberate and were both wrong before (#393).
+    #
+    # The audio_deleted_at test belongs in the JOIN condition, not in WHERE.
+    # On the right side of an outer join, WHERE ... IS NULL is also true for
+    # the all-NULL row produced when a user has no recordings at all, so those
+    # users were being selected as if they qualified.
+    #
+    # And the sum is coalesced before ordering. PostgreSQL sorts NULLs FIRST
+    # on DESC, so a user with no recordings (sum NULL) outranked everyone with
+    # data and the whole top five came back as "0 bytes (0 recordings)".
+    # SQLite sorts them last, which is why this only ever showed up on
+    # PostgreSQL deployments.
+    storage_used = db.func.coalesce(db.func.sum(Recording.file_size), 0)
     top_users_query = db.session.query(
         User.id,
         User.username,
         db.func.count(Recording.id).label('recordings_count'),
-        db.func.sum(Recording.file_size).label('storage_used')
-    ).join(Recording, User.id == Recording.user_id, isouter=True) \
-     .filter(Recording.audio_deleted_at.is_(None)) \
-     .group_by(User.id) \
-     .order_by(db.func.sum(Recording.file_size).desc()) \
+        storage_used.label('storage_used')
+    ).join(
+        Recording,
+        db.and_(User.id == Recording.user_id, Recording.audio_deleted_at.is_(None)),
+        isouter=True,
+    ) \
+     .group_by(User.id, User.username) \
+     .order_by(storage_used.desc()) \
      .limit(5)
     
     top_users = []
@@ -465,9 +536,17 @@ def admin_get_stats():
             'storage_used': storage_used or 0
         })
     
-    # Get total queries (chat requests)
-    # This is a placeholder - you would need to track this in your database
-    total_queries = 0
+    # AI requests this month: every model call except embeddings (chat,
+    # summaries, titles, events, speakers, Inquire). It replaces a "total
+    # queries" figure that was a hard-coded 0.
+    from datetime import date as _date
+    from src.models import TokenUsage
+    from src.services.token_tracking import token_tracker
+    month_start = _date.today().replace(day=1)
+    ai_requests_month = sum(
+        int(n or 0) for op, n in db.session.query(TokenUsage.operation_type, db.func.sum(TokenUsage.request_count))
+        .filter(TokenUsage.date >= month_start).group_by(TokenUsage.operation_type)
+        if not token_tracker.is_embedding_op(op))
     
     return jsonify({
         'total_users': total_users,
@@ -478,8 +557,23 @@ def admin_get_stats():
         'failed_recordings': failed_recordings,
         'total_storage': total_storage,
         'top_users': top_users,
-        'total_queries': total_queries
+        'ai_requests_month': ai_requests_month,
+        'transcribing_recordings': transcribing_recordings,
+        'summarizing_recordings': summarizing_recordings,
+        'audio_removed_recordings': audio_removed_recordings,
+        'archived_recordings': archived_recordings,
+        'jobs': {'queued': jobs_queued, 'running': jobs_running, 'failed_7d': jobs_failed_7d},
     })
+
+
+@admin_bp.route('/admin/stats/overview', methods=['GET'])
+@login_required
+def admin_get_stats_overview():
+    """Everything the System Statistics tab shows, for the last 7, 30 or 90 days."""
+    if not current_user.is_admin:
+        return jsonify({'error': 'Unauthorized'}), 403
+    from src.services.admin_stats import build_overview
+    return jsonify(build_overview(request.args.get('days', 30, type=int)))
 
 
 # --- Token Usage Stats ---
@@ -537,8 +631,10 @@ def admin_get_token_stats():
             for r in op_rows
         ]
 
+        from src.services.embeddings import embeddings_are_local
         return jsonify({
             'today': today_usage,
+            'embeddings_local': embeddings_are_local(),
             'current_month': {
                 'tokens': current_month.get('tokens', 0),
                 'cost': current_month.get('cost', 0),
@@ -733,6 +829,54 @@ def admin_get_user_transcription_stats():
 # --- Transcript Template Routes ---
 
 
+@admin_bp.route('/admin/llm-temperatures', methods=['GET'])
+@login_required
+def admin_get_llm_temperatures():
+    """Effective sampling temperatures, with their source (#411)."""
+    if not current_user.is_admin:
+        return jsonify({'error': 'Unauthorized'}), 403
+    from src.services.llm_settings import temperatures_status
+    return jsonify({'temperatures': temperatures_status()})
+
+
+@admin_bp.route('/admin/llm-temperatures', methods=['POST'])
+@login_required
+def admin_set_llm_temperatures():
+    """Save or clear admin temperatures. Body: {"values": {"summary": 0.2, "chat": null, ...}}.
+
+    A number between 0 and 2 is saved; null or an empty string clears the admin
+    value, so the built-in default applies again.
+    """
+    if not current_user.is_admin:
+        return jsonify({'error': 'Unauthorized'}), 403
+    from src.services.llm_settings import TEMPERATURES, parse_temperature, setting_key, temperatures_status
+    values = (request.get_json(silent=True) or {}).get('values')
+    if not isinstance(values, dict) or not values:
+        return jsonify({'error': 'values must be an object of temperatures'}), 400
+    unknown = [k for k in values if k not in TEMPERATURES]
+    if unknown:
+        return jsonify({'error': f"Unknown temperature: {', '.join(unknown)}"}), 400
+    parsed = {}
+    for kind, raw in values.items():
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            parsed[kind] = None
+            continue
+        value = parse_temperature(raw)
+        if value is None or isinstance(raw, bool):
+            return jsonify({'error': f'{kind} temperature must be a number between 0 and 2', 'field': kind}), 400
+        parsed[kind] = value
+    for kind, value in parsed.items():
+        key = setting_key(kind)
+        if value is None:
+            SystemSetting.query.filter_by(key=key).delete()
+        else:
+            SystemSetting.set_setting(key, str(value),
+                                      description=f'Sampling temperature for {kind} requests (#411)',
+                                      setting_type='string')
+    db.session.commit()
+    return jsonify({'success': True, 'temperatures': temperatures_status()})
+
+
 @admin_bp.route('/admin/settings', methods=['GET'])
 @login_required
 def admin_get_settings():
@@ -784,6 +928,11 @@ def admin_update_setting():
         if value not in ['true', 'false', '1', '0', 'yes', 'no', True, False, 1, 0]:
             return jsonify({'error': 'Value must be a valid boolean (true/false, 1/0, yes/no)'}), 400
     
+    if key == 'default_timezone':
+        from src.utils.timezones import is_valid_timezone
+        if not is_valid_timezone(value):
+            return jsonify({'error': 'Value must be a valid IANA timezone, for example Europe/Berlin'}), 400
+
     try:
         setting = SystemSetting.set_setting(key, value, description, setting_type)
 
@@ -1576,3 +1725,54 @@ def admin_inquire_status():
 
 # --- Group Management API (Admin Only) ---
 
+
+
+# --- Voice embedding compatibility (#380) ---------------------------------
+
+@admin_bp.route('/admin/voice-embeddings/status', methods=['GET'])
+@login_required
+def admin_voice_embedding_status():
+    """Report whether the backend still produces compatible voice embeddings.
+
+    Reads the stored verdict only. Probing costs a real transcription, so it
+    is never done on a page load.
+    """
+    if not current_user.is_admin:
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    from src.services.voice_embedding_check import get_status
+    return jsonify(get_status(current_app))
+
+
+@admin_bp.route('/admin/voice-embeddings/check', methods=['POST'])
+@login_required
+def admin_voice_embedding_check():
+    """Re-run the check now, regardless of whether the backend looks changed."""
+    if not current_user.is_admin:
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    from src.services.voice_embedding_check import check_voice_embeddings
+    result = check_voice_embeddings(current_app, force=True)
+    current_app.config['VOICE_EMBEDDING_STATUS'] = result
+    return jsonify(result)
+
+
+@admin_bp.route('/admin/voice-embeddings/rebaseline', methods=['POST'])
+@login_required
+def admin_voice_embedding_rebaseline():
+    """Accept the current backend as the reference.
+
+    For when the change was intentional and the voice profiles have been
+    rebuilt against the new model, or are being abandoned. This discards the
+    embedding the existing profiles were built against, so it cannot be undone
+    by restoring the old backend.
+    """
+    if not current_user.is_admin:
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    from src.services.voice_embedding_check import rebaseline
+    result = rebaseline(current_app)
+    current_app.config['VOICE_EMBEDDING_STATUS'] = result
+    current_app.logger.info(
+        "Voice embedding reference re-baselined by admin user %s", current_user.id)
+    return jsonify(result)

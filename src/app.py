@@ -1,7 +1,7 @@
 # Speakr - Audio Transcription and Summarization App
 import os
 import sys
-from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, flash, Response, make_response
+from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, flash, Response, make_response, session
 from urllib.parse import urlparse, urljoin, quote
 from email.utils import encode_rfc2231
 from markupsafe import Markup
@@ -20,7 +20,6 @@ import httpx
 import re
 import subprocess
 import mimetypes
-import markdown
 import bleach
 
 # Add common audio MIME type mappings that might be missing
@@ -33,7 +32,7 @@ mimetypes.add_type('audio/ogg', '.ogg')
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from flask_bcrypt import Bcrypt
 from flask_wtf import FlaskForm
-from flask_wtf.csrf import CSRFProtect
+from flask_wtf.csrf import CSRFProtect, CSRFError
 from wtforms import StringField, PasswordField, SubmitField, BooleanField
 from wtforms.validators import DataRequired, Length, Email, EqualTo, ValidationError
 from flask_limiter import Limiter
@@ -160,29 +159,24 @@ root_logger.addHandler(handler)
 markdown_logger = logging.getLogger('MARKDOWN')
 markdown_logger.setLevel(logging.WARNING)
 
-# --- Initialize Markdown Once (Performance Optimization) ---
-# Create a single reusable Markdown instance to avoid reinitializing extensions on every call
-_markdown_instance = markdown.Markdown(extensions=[
-    'fenced_code',      # Fenced code blocks
-    'tables',           # Table support
-    'attr_list',        # Attribute lists
-    'def_list',         # Definition lists
-    'footnotes',        # Footnotes
-    'abbr',             # Abbreviations
-    'codehilite',       # Syntax highlighting for code blocks
-    'smarty'            # Smart quotes, dashes, etc.
-])
-
 # --- Rate Limiting Setup (will be configured after app creation) ---
 # RATELIMIT_ENABLED (default true) lets the test suite and any deployment that
 # fronts its own rate limiting turn Flask-Limiter off. The per-endpoint auth
 # limits (login/register/password-reset) are applied via the rate_limit
 # decorator in src/api/auth.py and src/api/tokens.py.
 _RATELIMIT_ENABLED = os.environ.get('RATELIMIT_ENABLED', 'true').lower() != 'false'
+def _token_request_exempt():
+    # Token traffic has per-token limits (src/utils/token_auth.require_scope);
+    # the app-wide per-IP defaults apply to session traffic only (mailr spec G1).
+    from src.utils.token_auth import is_token_request
+    return is_token_request()
+
+
 limiter = Limiter(
     get_remote_address,
     app=None,  # Defer initialization
     default_limits=["5000 per day", "1000 per hour"],
+    default_limits_exempt_when=_token_request_exempt,
     enabled=_RATELIMIT_ENABLED,
 )
 
@@ -249,6 +243,40 @@ def has_recording_access(recording, user, require_edit=False, require_reshare=Fa
 
     # User has at least view access
     return True
+
+
+def editable_recording_ids(recordings, user, share_map):
+    """has_recording_access(..., require_edit=True) for a page of recordings.
+
+    share_map is {recording_id: InternalShare} of the user's shares for these
+    recordings. Returns the ids the user may edit, with one query in all for
+    the group-admin rule instead of one per row (D#483).
+    """
+    editable = {r.id for r in recordings if r.user_id == user.id}
+    if not ENABLE_INTERNAL_SHARING:
+        return editable
+    needs_admin = []
+    for recording in recordings:
+        share = share_map.get(recording.id)
+        if recording.id in editable or not share:
+            continue
+        if share.can_edit:
+            editable.add(recording.id)
+        else:
+            needs_admin.append(recording.id)
+    if needs_admin:
+        editable.update(rid for (rid,) in db.session.query(RecordingTag.recording_id).join(
+            Tag, RecordingTag.tag_id == Tag.id
+        ).join(
+            GroupMembership, Tag.group_id == GroupMembership.group_id
+        ).filter(
+            RecordingTag.recording_id.in_(needs_admin),
+            GroupMembership.user_id == user.id,
+            GroupMembership.role == 'admin',
+            Tag.group_id.isnot(None),
+            db.or_(Tag.auto_share_on_apply == True, Tag.share_with_group_lead == True)
+        ).distinct())
+    return editable
 
 
 def get_user_recording_status(recording, user):
@@ -351,6 +379,8 @@ def enrich_recording_dict_with_user_status(recording_dict, recording, user):
     user_inbox, user_highlighted = get_user_recording_status(recording, user)
     recording_dict['is_inbox'] = user_inbox
     recording_dict['is_highlighted'] = user_highlighted
+    from src.services.recording_state import get_user_archived
+    recording_dict['is_archived'] = get_user_archived(recording, user)
     return recording_dict
 
 
@@ -436,6 +466,21 @@ app.config['SESSION_COOKIE_SECURE'] = (
 app.config['SESSION_COOKIE_HTTPONLY'] = True  # Still protect against XSS
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # CSRF protection
 
+# Remember-me cookie (#437). Flask-Login's defaults are a 365-day cookie with
+# no Secure flag and no SameSite attribute. It now follows the session
+# cookie's Secure setting, is SameSite=Lax, and lasts REMEMBER_COOKIE_DAYS
+# (default 30) from the sign-in. It is set only when "Remember me" is ticked:
+# REMEMBER_COOKIE_REFRESH_EACH_REQUEST stays off, because with it Flask-Login
+# sets the cookie on every response for every signed-in user.
+app.config['REMEMBER_COOKIE_SECURE'] = app.config['SESSION_COOKIE_SECURE']
+app.config['REMEMBER_COOKIE_HTTPONLY'] = True
+app.config['REMEMBER_COOKIE_SAMESITE'] = 'Lax'
+try:
+    _remember_days = max(1, int(os.environ.get('REMEMBER_COOKIE_DAYS', '30')))
+except ValueError:
+    _remember_days = 30
+app.config['REMEMBER_COOKIE_DURATION'] = timedelta(days=_remember_days)
+
 # --- Security response headers ---
 # Set at the app level so a deployment WITHOUT a hardening reverse proxy is
 # still protected (previously the app set only X-Robots-Tag, leaving direct /
@@ -485,6 +530,10 @@ else:
 from src.database import db
 db.init_app(app)
 
+# updated_at and tombstones for API clients (mailr spec G2)
+from src.services.recording_changes import register_change_tracking
+register_change_tracking()
+
 # Import all models from extracted modules
 from src.models import (
     User, Speaker, Recording, TranscriptChunk, Share, InternalShare,
@@ -533,7 +582,54 @@ login_manager.login_view = 'auth.login'
 login_manager.login_message_category = 'info'
 bcrypt = Bcrypt()
 bcrypt.init_app(app)
-limiter.init_app(app)  # Initialize the limiter (uses in-memory storage by default)
+# Rate-limit headers, including Retry-After on 429 (mailr spec G1).
+app.config.setdefault("RATELIMIT_HEADERS_ENABLED", True)
+# The default in-memory storage counts in each gunicorn worker separately, so
+# every limit is in effect multiplied by the number of workers. A shared
+# backend (redis:// with the bundled client; memcached:// needs pymemcache)
+# makes the limits exact (#484).
+# While that backend is unreachable, counting falls back to memory instead of
+# failing the request.
+if os.environ.get("RATELIMIT_STORAGE_URI"):
+    app.config.setdefault("RATELIMIT_STORAGE_URI", os.environ["RATELIMIT_STORAGE_URI"])
+    app.config.setdefault("RATELIMIT_IN_MEMORY_FALLBACK_ENABLED", True)
+limiter.init_app(app)
+
+
+from flask_limiter.errors import RateLimitExceeded as _RateLimitExceeded
+
+
+@app.errorhandler(_RateLimitExceeded)
+def _rate_limit_exceeded(e):
+    """The limiter's own 429 response, plus Retry-After in seconds (mailr spec G1)."""
+    import time as _time
+    resp = e.get_response()
+    retry = None
+    try:
+        current = limiter.current_limit
+        if current is not None:
+            retry = max(1, int(current.reset_at - _time.time()))
+    except Exception:
+        retry = None
+    if retry is None:
+        try:
+            retry = int(e.limit.limit.get_expiry())
+        except Exception:
+            retry = 60
+    from src.utils.token_auth import is_token_request, user_rate_key
+    if is_token_request():
+        # API clients get JSON that says which budget ran out: the token's own
+        # or the one all tokens of the account share (#484).
+        from flask import jsonify
+        account = getattr(e.limit, 'key_func', None) is user_rate_key
+        resp = jsonify({
+            'error': e.description,
+            'code': 'account_rate_limit_exceeded' if account else 'token_rate_limit_exceeded',
+            'limit': str(e.limit.limit),
+        })
+        resp.status_code = 429
+    resp.headers["Retry-After"] = str(retry)
+    return resp
 
 # Exempt frequently-polled status endpoints from rate limiting
 @limiter.request_filter
@@ -607,8 +703,14 @@ def csrf_token_aware_check():
     # Note that csrf._exempt_blueprints holds Blueprint OBJECTS, so we
     # resolve the request's blueprint name through app.blueprints, the
     # same way Flask-WTF's own protect() hook does.
+    #
+    # These exemptions exist for token clients. A request that carries a
+    # browser session or remember-me cookie is signed in by that cookie,
+    # so it still needs a CSRF token here, which the web UI sends (#478).
     if app.blueprints.get(request.blueprint) in csrf._exempt_blueprints:
-        return
+        remember_cookie = app.config.get('REMEMBER_COOKIE_NAME', 'remember_token')
+        if not session.get('_user_id') and remember_cookie not in request.cookies:
+            return
 
     # View-level registration-time exemptions (e.g. share_target).
     # Flask-WTF identifies exempt views by f"{__module__}.{__name__}";
@@ -631,6 +733,89 @@ def csrf_token_aware_check():
     # fails, csrf.protect() raises a CSRFError which Flask-WTF's error
     # handler turns into a 400 response.
     csrf.protect()
+
+
+@app.before_request
+def enforce_token_scopes():
+    """Scoped API tokens (mailr spec G1), checked before any view runs.
+
+    Sessions and full tokens (scopes NULL, every token made before scopes) pass
+    unchanged. A scoped token must come from a header, may only reach routes
+    marked with require_scope, and must hold every scope the route needs.
+    A refused request therefore has no side effect and fires no webhook.
+    """
+    if not request.endpoint or request.endpoint == 'static':
+        return
+    if session.get('_user_id'):
+        return  # a browser session takes precedence over a token, as in Flask-Login
+    from src.utils.token_auth import resolve_request_token, scope_error_response
+    api_token, via_query = resolve_request_token()
+    if api_token is None or api_token.scope_set is None:
+        return
+    if via_query:
+        resp = jsonify({'error': 'Scoped tokens are accepted only in a header (Authorization: Bearer ...)',
+                        'code': 'invalid_token'})
+        resp.status_code = 401
+        return resp
+    view = app.view_functions.get(request.endpoint)
+    required = getattr(view, '_required_scopes', None)
+    if required is None:
+        return scope_error_response(None, api_token)
+    missing = required - api_token.scope_set
+    if missing:
+        return scope_error_response(missing, api_token)
+
+
+
+def _csrf_rejection_message(reason):
+    """Turn a Flask-WTF CSRFError description into something an admin can act on.
+
+    Token failures (missing, expired, mismatched) are fixed by reloading the
+    page. The two referrer failures are not: Flask-WTF checks the Referer
+    header on every HTTPS request, so a proxy that strips it or rewrites the
+    Host header makes every POST fail, however often the token is refreshed
+    (issue #388). Those get a message that names the proxy setting.
+    """
+    if 'referrer header is missing' in reason:
+        return False, ('The request was rejected because the browser sent no Referer header, '
+                       'which HTTPS requests require. A reverse proxy, browser extension or '
+                       'Referrer-Policy header that removes it causes this.')
+    if 'referrer does not match' in reason:
+        referrer_host = urlparse(request.referrer or '').netloc or 'unknown'
+        return False, (f'The request was rejected because this page was loaded from '
+                       f'{referrer_host}, but the server received the request for {request.host}. '
+                       f'The reverse proxy must forward the original Host header (or '
+                       f'X-Forwarded-Host), and TRUSTED_PROXY_HOPS must match the number of proxies.')
+    return True, 'Your session has expired. Please reload the page and try again.'
+
+
+@app.errorhandler(CSRFError)
+def handle_csrf_error(error):
+    """Answer fetch/XHR callers with JSON that says why CSRF validation failed.
+
+    Flask-WTF's default is an HTML 400 page. The frontend cannot tell a
+    referrer failure from an expired token in that page, so it refreshes the
+    token, retries, fails again and shows a generic error, while the server
+    logs nothing. Browser form posts still get the HTML page.
+    """
+    reason = error.description or ''
+    retryable, message = _csrf_rejection_message(reason.lower())
+    app.logger.warning(
+        'CSRF validation failed for %s %s: %s (Referer host: %s, request host: %s, scheme: %s)',
+        request.method, request.path, reason,
+        urlparse(request.referrer or '').netloc or '-', request.host, request.scheme,
+    )
+    is_form_navigation = (
+        request.mimetype in ('application/x-www-form-urlencoded', 'multipart/form-data')
+        and 'text/html' in request.headers.get('Accept', '')
+    )
+    if is_form_navigation:
+        return error
+    return jsonify({
+        'error': message,
+        'csrf_reason': reason,
+        'csrf_retryable': retryable,
+    }), 400
 
 
 @app.errorhandler(RequestEntityTooLarge)
@@ -659,6 +844,31 @@ _app_version = get_version()
 def inject_app_version():
     return {'app_version': _app_version}
 
+from src.utils.i18n_bootstrap import i18n_bootstrap as _i18n_bootstrap
+
+@app.context_processor
+def inject_i18n_bootstrap():
+    """Translations embedded in pages that load i18n.js (includes/i18n_bootstrap.html)."""
+    return {'i18n_bootstrap': _i18n_bootstrap}
+
+@app.context_processor
+def inject_account_theme():
+    """The theme saved with the signed-in user's account (D#419), for
+    includes/theme_account.html. None for a visitor who is not signed in."""
+    from flask import has_request_context
+    from flask_login import current_user
+    if not has_request_context() or not current_user.is_authenticated:
+        return {'account_theme': None}
+    return {'account_theme': {'dark': current_user.theme_dark_mode,
+                              'scheme': current_user.theme_color_scheme}}
+
+
+@app.context_processor
+def inject_inquire_mode_flag():
+    """The shared header shows the Inquire button on every page."""
+    return {'inquire_mode_enabled': ENABLE_INQUIRE_MODE}
+
+
 @app.context_processor
 def inject_help_center_link():
     """Optional custom help link in the user menu (#371).
@@ -670,6 +880,12 @@ def inject_help_center_link():
         'help_center_url': os.environ.get('HELP_CENTER_URL', '').strip(),
         'help_center_label': os.environ.get('HELP_CENTER_LABEL', '').strip(),
     }
+
+@app.context_processor
+def inject_registration_flag():
+    """The login page offers the register link only when /register accepts (#479)."""
+    from src.api.auth import registration_enabled
+    return {'registration_enabled': registration_enabled()}
 
 @app.context_processor
 def inject_group_admin_status():
@@ -710,7 +926,18 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 # --- User loader for Flask-Login ---
 @login_manager.user_loader
 def load_user(user_id):
-    return db.session.get(User, int(user_id))
+    # "<id>" or "<id>:<session_version>" (see User.get_id). A sign-in made
+    # before the password was last set carries an older version and is
+    # refused (#437).
+    uid, _, version = str(user_id).partition(':')
+    try:
+        user = db.session.get(User, int(uid))
+        version = int(version or 0)
+    except ValueError:
+        return None
+    if user is None or (user.session_version or 0) != version:
+        return None
+    return user
 
 
 @login_manager.request_loader
@@ -756,7 +983,8 @@ def handle_unauthorized():
     # (flash the login message, redirect to the login view with ?next=).
     from flask_login.utils import login_url as _login_url
     if login_manager.login_message:
-        flash(login_manager.login_message, category=login_manager.login_message_category)
+        from src.utils.localization import translate
+        flash(translate('server.flash.loginRequired'), category=login_manager.login_message_category)
     return redirect(_login_url(url_for(login_manager.login_view), request.url))
 
 
@@ -779,6 +1007,7 @@ from src.api.initial_prompt_templates import initial_prompt_templates_bp
 from src.api.events import events_bp, init_events_helpers
 from src.api.system import system_bp, init_system_helpers
 from src.api.push_notifications import push_bp
+from src.api.notifications import notifications_bp
 from src.api.api_v1 import api_v1_bp, init_api_v1_helpers
 from src.api.recording_sessions import recording_sessions_bp
 from src.api.webhooks import webhooks_bp
@@ -796,7 +1025,7 @@ client, chunking_service, version = initialize_config(app)
 init_auth_extensions(bcrypt, csrf, limiter)
 init_tokens_helpers(bcrypt, csrf, limiter)
 init_shares_helpers(has_recording_access)
-init_recordings_helpers(has_recording_access=has_recording_access, get_user_recording_status=get_user_recording_status, set_user_recording_status=set_user_recording_status, enrich_recording_dict_with_user_status=enrich_recording_dict_with_user_status, bcrypt=bcrypt, csrf=csrf, limiter=limiter, chunking_service=chunking_service)
+init_recordings_helpers(has_recording_access=has_recording_access, editable_recording_ids=editable_recording_ids, get_user_recording_status=get_user_recording_status, set_user_recording_status=set_user_recording_status, enrich_recording_dict_with_user_status=enrich_recording_dict_with_user_status, bcrypt=bcrypt, csrf=csrf, limiter=limiter, chunking_service=chunking_service)
 init_tags_helpers(has_recording_access=has_recording_access, bcrypt=bcrypt, csrf=csrf, limiter=limiter)
 init_folders_helpers(has_recording_access=has_recording_access, bcrypt=bcrypt, csrf=csrf, limiter=limiter)
 init_groups_helpers(has_recording_access=has_recording_access, bcrypt=bcrypt, csrf=csrf, limiter=limiter)
@@ -826,8 +1055,9 @@ app.register_blueprint(initial_prompt_templates_bp)
 app.register_blueprint(events_bp)
 app.register_blueprint(system_bp)
 app.register_blueprint(push_bp)
+app.register_blueprint(notifications_bp)
 app.register_blueprint(api_v1_bp)
-csrf.exempt(api_v1_bp)  # API v1 uses token auth, not CSRF
+csrf.exempt(api_v1_bp)  # token clients only; browser sessions still need CSRF (#478)
 
 # Recording sessions (#287 c/d): the streaming client POSTs binary chunk
 # bodies via fetch with the session cookie. CSRF tokens are easy to attach

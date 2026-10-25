@@ -67,7 +67,10 @@ def migration_lock(engine, logger=None, timeout=120):
             # host do not serialise against each other.
             digest = hashlib.sha256(str(engine.url).encode()).hexdigest()[:16]
             lock_path = os.path.join(tempfile.gettempdir(), f'speakr_migration_{digest}.lock')
-            handle = open(lock_path, 'w')
+            # O_NOFOLLOW: the path is predictable and under a shared temp dir, so a
+            # symlink planted there must not be followed and truncated. 0o600 keeps
+            # other local users from pre-creating or reading it.
+            handle = os.fdopen(os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), 'r+')
             deadline = time.monotonic() + timeout
             while True:
                 try:
@@ -105,6 +108,62 @@ def migration_lock(engine, logger=None, timeout=120):
             # Both lock types are released by the OS or the connection closing,
             # so a failure here must not mask whatever the caller was doing.
             pass
+
+
+# Singleton locks are held for the process lifetime; keeping the file handle
+# referenced here is what keeps them held.
+_held_singleton_locks = {}
+
+
+def acquire_singleton_lock(engine, name, logger=None):
+    """Elect exactly one process on this host to own a named responsibility, for its lifetime.
+
+    The counterpart of `migration_lock`: that serialises work every process must
+    do, this picks the one process that should do it at all, such as running the
+    job-queue workers. It does not wait (a loser returns False at once) and it
+    never releases: the holder keeps the lock until the process exits, so
+    leadership ends on process death, crash or SIGKILL included, and the
+    replacement process wins the next election.
+
+    A file lock is used for every backend: a session-level advisory lock lives
+    on a database connection nobody watches, and when that connection dies the
+    lock is gone while the owner still believes it holds it. Returns True when
+    this process holds `name`; asking again returns the original answer. If the
+    lock cannot be taken at all this process takes ownership anyway, failing
+    open like `migration_lock`, so the worst case is the pre-election behaviour
+    rather than an app that transcribes nothing.
+    """
+    if name in _held_singleton_locks:
+        return _held_singleton_locks[name][0]
+
+    # One lock file per (database, name) so unrelated databases elect independently
+    digest = hashlib.sha256(f'{engine.url}|{name}'.encode()).hexdigest()[:16]
+    lock_path = os.path.join(tempfile.gettempdir(), f'speakr_singleton_{digest}.lock')
+    handle = None
+    try:
+        # O_NOFOLLOW: the path is predictable and under a shared temp dir, so a
+        # symlink planted there must not be followed and truncated. 0o600 keeps
+        # other local users from pre-creating or reading it.
+        handle = os.fdopen(os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), 'r+')
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        acquired = True
+    except BlockingIOError:
+        acquired = False
+    except Exception as e:
+        # Fail open: every process working (today's behaviour) beats none working
+        if logger:
+            logger.error("Could not run the '%s' election, taking ownership anyway: %s", name, e)
+        acquired = True
+    if not acquired and handle is not None:
+        handle.close()
+        handle = None
+
+    # Keep the file handle referenced so GC cannot release the lock
+    _held_singleton_locks[name] = (acquired, handle)
+
+    if logger:
+        logger.info("Singleton '%s': this process %s", name, "holds it" if acquired else "does not hold it")
+    return acquired
 
 
 def ensure_migration_ledger(engine):
@@ -259,6 +318,22 @@ def create_index_if_not_exists(engine, index_name, table_name, columns, unique=F
             conn.execute(text(
                 f'CREATE {unique_clause}INDEX {index_name} ON {quoted_table} ({columns})'
             ))
+        conn.commit()
+    return True
+
+
+def drop_index_if_exists(engine, index_name, table_name):
+    """Drop an index if it exists. Returns True if it was dropped."""
+    inspector = inspect(engine)
+    if table_name not in inspector.get_table_names():
+        return False
+    if index_name not in [idx['name'] for idx in inspector.get_indexes(table_name)]:
+        return False
+    with engine.connect() as conn:
+        if engine.name == 'mysql':
+            conn.execute(text(f'DROP INDEX {index_name} ON `{table_name}`'))
+        else:
+            conn.execute(text(f'DROP INDEX {index_name}'))
         conn.commit()
     return True
 

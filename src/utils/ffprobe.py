@@ -28,6 +28,33 @@ class FFProbeError(Exception):
     pass
 
 
+class FFProbeTimeoutError(FFProbeError):
+    """Raised when ffprobe runs past its timeout.
+
+    A timeout says nothing about the input (a large MP4 with its index at the
+    end can take long to probe), unlike a file ffprobe cannot read.
+    """
+    pass
+
+
+class FFProbeNotFoundError(FFProbeError):
+    """Raised when the ffprobe executable is not found."""
+    pass
+
+
+def has_audio_stream(codec_info: Dict[str, Any]) -> bool:
+    """True when the probed file has at least one audio stream."""
+    return bool(codec_info.get('has_audio') or codec_info.get('audio_codec'))
+
+
+def probe_rejected_input(error: FFProbeError) -> bool:
+    """True when ffprobe ran to completion and could not read the file.
+
+    A timeout or a missing ffprobe says nothing about the file itself.
+    """
+    return not isinstance(error, (FFProbeTimeoutError, FFProbeNotFoundError))
+
+
 def probe(filename: str, cmd: str = 'ffprobe', timeout: Optional[int] = None) -> Dict[str, Any]:
     """
     Run ffprobe on the specified file and return a JSON representation of the output.
@@ -68,9 +95,9 @@ def probe(filename: str, cmd: str = 'ffprobe', timeout: Optional[int] = None) ->
     except subprocess.TimeoutExpired:
         if p:
             p.kill()
-        raise FFProbeError(f'ffprobe timed out after {timeout} seconds')
+        raise FFProbeTimeoutError(f'ffprobe timed out after {timeout} seconds')
     except FileNotFoundError:
-        raise FFProbeError('ffprobe command not found. Please ensure ffmpeg is installed.')
+        raise FFProbeNotFoundError('ffprobe command not found. Please ensure ffmpeg is installed.')
     except json.JSONDecodeError as e:
         raise FFProbeError(f'Failed to parse ffprobe output: {e}')
 
@@ -186,6 +213,10 @@ def get_codec_info(filename: str, timeout: Optional[int] = None) -> Dict[str, An
                     result['channels'] = stream.get('channels')
             
             elif codec_type == 'video':
+                # Cover art embedded in an audio file (MP3, M4A, FLAC) is a
+                # one-frame video stream marked attached_pic; it is not video.
+                if (stream.get('disposition') or {}).get('attached_pic'):
+                    continue
                 result['has_video'] = True
                 if result['video_codec'] is None:  # Use first video stream
                     result['video_codec'] = codec_name
@@ -579,7 +610,9 @@ def _get_file_mtime(filename: str) -> Optional[datetime]:
 
     try:
         stat_info = os.stat(filename)
-        return datetime.fromtimestamp(stat_info.st_mtime)
+        # Naive UTC, the storage convention (was server-local time, #412 B6).
+        from datetime import timezone as _tz
+        return datetime.fromtimestamp(stat_info.st_mtime, tz=_tz.utc).replace(tzinfo=None)
     except (OSError, ValueError) as e:
         logger.warning(f"Failed to get file mtime for {filename}: {e}")
         return None

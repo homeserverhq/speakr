@@ -2,17 +2,18 @@
 <html lang="en" class="h-full">
 <head>
     <meta charset="UTF-8">
+    {% include 'includes/theme_account.html' %}
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
     <title>{{ title }} - Speakr</title>
     <link rel="icon" href="{{ url_for('static', filename='img/favicon.ico') }}" type="image/svg+xml">
         <!-- All dependencies bundled locally for offline support -->
-<script src="{{ url_for('static', filename='vendor/js/tailwind.min.js') }}"></script>
         <!-- All dependencies bundled locally for offline support -->
 <link rel="stylesheet" href="{{ url_for('static', filename='vendor/css/fontawesome.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/primitives.css') }}">
+    {% include 'includes/i18n_bootstrap.html' %}
     <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
     <script src="{{ url_for('static', filename='js/asr-languages.js') }}"></script>
     <script src="{{ url_for('static', filename='js/organizer-modals.js') }}"></script>
@@ -461,9 +462,15 @@
             display: none;
         }
     </style>
+    <!-- Tailwind utilities, compiled at build time (scripts/build_css.sh). Last in
+         <head> so that, as with the former runtime build, they follow the page's
+         own stylesheets in the cascade. -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}">
+    <script src="{{ url_for('static', filename='js/timezone-sync.js') }}" defer></script>
 </head>
 <body class="bg-[var(--bg-primary)] text-[var(--text-primary)] h-full flex flex-col overflow-hidden">
     {% set page_label = 'Account' %}
+    {% set page_label_key = 'nav.account' %}
     {% include 'components/page-header.html' %}
     <div class="main-container flex-1 flex flex-col min-h-0 overflow-hidden">
 
@@ -537,42 +544,10 @@
                     {% endif %}
                 {% endwith %}
                 
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <!-- Left Column: Form -->
-                    <div>
-                        <form id="accountInfoForm" method="POST" action="{{ url_for('auth.account') }}" class="space-y-6">
-                            <div class="mb-6">
-                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-                                <h3 class="text-lg font-medium text-[var(--text-secondary)] mb-2" data-i18n="account.personalInfo">Personal Information</h3>
-                                <div class="bg-[var(--bg-tertiary)] p-4 rounded-lg border border-[var(--border-primary)] space-y-4">
-                                    <div>
-                                        <label for="user_name" class="block text-sm font-medium text-[var(--text-muted)]" data-i18n="account.fullName">Full Name</label>
-                                        <input type="text" name="user_name" id="user_name" value="{{ current_user.name or '' }}" data-i18n-placeholder="form.yourFullName" class="mt-1 block w-full px-3 py-2 border border-[var(--border-secondary)] rounded-md shadow-sm focus:outline-none focus:ring-[var(--border-focus)] focus:border-[var(--border-focus)] sm:text-sm bg-[var(--bg-input)] text-[var(--text-primary)]">
-                                    </div>
-                                    <div>
-                                        <label for="user_job_title" class="block text-sm font-medium text-[var(--text-muted)]" data-i18n="account.jobTitle">Job Title</label>
-                                        <input type="text" name="user_job_title" id="user_job_title" value="{{ current_user.job_title or '' }}" placeholder="e.g., Software Engineer" class="mt-1 block w-full px-3 py-2 border border-[var(--border-secondary)] rounded-md shadow-sm focus:outline-none focus:ring-[var(--border-focus)] focus:border-[var(--border-focus)] sm:text-sm bg-[var(--bg-input)] text-[var(--text-primary)]">
-                                    </div>
-                                    <div>
-                                        <label for="user_company" class="block text-sm font-medium text-[var(--text-muted)]" data-i18n="account.companyOrganization">Company / Organization</label>
-                                        <input type="text" name="user_company" id="user_company" value="{{ current_user.company or '' }}" placeholder="e.g., Acme Corp" class="mt-1 block w-full px-3 py-2 border border-[var(--border-secondary)] rounded-md shadow-sm focus:outline-none focus:ring-[var(--border-focus)] focus:border-[var(--border-focus)] sm:text-sm bg-[var(--bg-input)] text-[var(--text-primary)]">
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Save button moved to the sticky tab-footer
-                                 at the bottom of this content area; the
-                                 button there uses form="accountInfoForm"
-                                 to submit this form. -->
-                        </form>
-                    </div>
-                    
-                    <!-- Right Column: Stats, User Details, Account Actions -->
-                    <div class="space-y-6">
-                        <div>
+                <div class="mb-8">
                             <h3 class="text-lg font-medium text-[var(--text-secondary)] mb-2" data-i18n="account.statistics">Account Statistics</h3>
                             <div class="bg-[var(--bg-tertiary)] p-4 rounded-lg border border-[var(--border-primary)]">
-                                <div class="grid grid-cols-2 gap-4">
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
                                     <div class="text-center p-4 bg-[var(--bg-secondary)] rounded-lg border border-[var(--border-primary)] shadow-sm">
                                         <span class="block text-3xl font-bold text-[var(--text-accent)]">{{ current_user.recordings|length }}</span>
                                         <span class="block text-sm text-[var(--text-muted)]" data-i18n="account.totalRecordings">Total Recordings</span>
@@ -604,8 +579,35 @@
                                 </div>
                             </div>
                         </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <!-- Left Column: personal information, user details -->
+                    <div class="space-y-6">
+                        <form id="accountInfoForm" method="POST" action="{{ url_for('auth.account') }}" class="space-y-6">
+                            <div class="mb-6">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
+                                <h3 class="text-lg font-medium text-[var(--text-secondary)] mb-2" data-i18n="account.personalInfo">Personal Information</h3>
+                                <div class="bg-[var(--bg-tertiary)] p-4 rounded-lg border border-[var(--border-primary)] space-y-4">
+                                    <div>
+                                        <label for="user_name" class="block text-sm font-medium text-[var(--text-muted)]" data-i18n="account.fullName">Full Name</label>
+                                        <input type="text" name="user_name" id="user_name" value="{{ current_user.name or '' }}" data-i18n-placeholder="form.yourFullName" class="mt-1 block w-full px-3 py-2 border border-[var(--border-secondary)] rounded-md shadow-sm focus:outline-none focus:ring-[var(--border-focus)] focus:border-[var(--border-focus)] sm:text-sm bg-[var(--bg-input)] text-[var(--text-primary)]">
+                                    </div>
+                                    <div>
+                                        <label for="user_job_title" class="block text-sm font-medium text-[var(--text-muted)]" data-i18n="account.jobTitle">Job Title</label>
+                                        <input type="text" name="user_job_title" id="user_job_title" value="{{ current_user.job_title or '' }}" placeholder="e.g., Software Engineer" class="mt-1 block w-full px-3 py-2 border border-[var(--border-secondary)] rounded-md shadow-sm focus:outline-none focus:ring-[var(--border-focus)] focus:border-[var(--border-focus)] sm:text-sm bg-[var(--bg-input)] text-[var(--text-primary)]">
+                                    </div>
+                                    <div>
+                                        <label for="user_company" class="block text-sm font-medium text-[var(--text-muted)]" data-i18n="account.companyOrganization">Company / Organization</label>
+                                        <input type="text" name="user_company" id="user_company" value="{{ current_user.company or '' }}" placeholder="e.g., Acme Corp" class="mt-1 block w-full px-3 py-2 border border-[var(--border-secondary)] rounded-md shadow-sm focus:outline-none focus:ring-[var(--border-focus)] focus:border-[var(--border-focus)] sm:text-sm bg-[var(--bg-input)] text-[var(--text-primary)]">
+                                    </div>
+                                </div>
+                            </div>
 
-                        <div class="mt-6"> <!-- Added mt-6 for spacing, was mb-6 on User Details -->
+                            <!-- Save button moved to the sticky tab-footer
+                                 at the bottom of this content area; the
+                                 button there uses form="accountInfoForm"
+                                 to submit this form. -->
+                        </form>
+                        <div>
                             <h3 class="text-lg font-medium text-[var(--text-secondary)] mb-2" data-i18n="account.userDetails">User Details</h3>
                             <div class="bg-[var(--bg-tertiary)] p-4 rounded-lg border border-[var(--border-primary)]">
                                 <div class="mb-3">
@@ -619,13 +621,50 @@
                             </div>
                         </div>
 
+                    </div>
+
+                    <!-- Right Column: usage and limits, sign-in -->
+                    <div class="space-y-6">
+                        <!-- Usage and limits: AI tokens and transcription this
+                             month, and storage, each against its limit when the
+                             administrator set one (#413). -->
+                        {% if usage_limits %}
+                        <div>
+                            <h3 class="text-lg font-medium text-[var(--text-secondary)] mb-2" data-i18n="account.usageAndLimits">Usage and Limits</h3>
+                            <div class="bg-[var(--bg-tertiary)] p-4 rounded-lg border border-[var(--border-primary)] space-y-4" id="account-storage">
+                                {% for row in usage_limits %}
+                                {% set pct = row.percentage %}
+                                <div>
+                                    <div class="flex items-baseline justify-between gap-3 text-sm">
+                                        <span class="font-medium text-[var(--text-secondary)]"><i class="fas {{ row.icon }} mr-1.5 text-[var(--text-muted)]"></i>{% if row.key == 'tokens' %}<span data-i18n="account.aiTokensMonth">AI tokens this month</span>{% elif row.key == 'transcription' %}<span data-i18n="account.transcriptionMonth">Transcription this month</span>{% else %}<span data-i18n="account.storage">Storage</span>{% endif %}</span>
+                                        {% if row.limit %}
+                                        <span class="text-[var(--text-primary)] tabular-nums whitespace-nowrap" data-i18n="account.storageOfQuota" data-i18n-params='{"used": "{{ row.used }}", "quota": "{{ row.limit }}"}'>{{ row.used }} of {{ row.limit }}</span>
+                                        {% else %}
+                                        <span class="text-[var(--text-primary)] tabular-nums whitespace-nowrap" data-i18n="account.storageNoLimit" data-i18n-params='{"used": "{{ row.used }}"}'>{{ row.used }} used, no limit</span>
+                                        {% endif %}
+                                    </div>
+                                    {% if row.limit %}
+                                    <div class="w-full bg-[var(--bg-secondary)] rounded-full h-2 mt-2">
+                                        <div class="h-2 rounded-full {% if pct >= 100 %}bg-[var(--text-danger-strong)]{% elif pct >= 80 %}bg-[var(--text-warn-strong)]{% else %}bg-[var(--text-success-strong)]{% endif %}" style="width: {{ [pct, 100]|min }}%"></div>
+                                    </div>
+                                    {% if row.key == 'storage' and pct >= 100 %}
+                                    <p class="text-xs text-[var(--text-danger-strong)] mt-2" data-i18n="account.storageFull">Your storage is full. Uploads and new recordings are refused until you delete recordings or remove their audio.</p>
+                                    {% endif %}
+                                    {% endif %}
+                                </div>
+                                {% endfor %}
+                                <p class="text-xs text-[var(--text-muted)] border-t border-[var(--border-primary)] pt-3" data-i18n="account.usageHelp">AI tokens and transcription minutes are counted from the start of each month. Storage includes the audio and video you keep, but not recordings with their audio removed.</p>
+                            </div>
+                        </div>
+                        {% endif %}
+
                         <!-- Sign-in & Security — combines the Single Sign-On
                              provider controls and the password (change /
                              set) flow into one section since they're both
                              ways the user authenticates into the account.
                              "Go to Recordings" link removed; the
                              page-header Speakr logo is the natural exit. -->
-                        <div class="mt-6">
+                        <div>
                             <h3 class="text-lg font-medium text-[var(--text-secondary)] mb-2" data-i18n="account.signInSecurity">Sign-in & Security</h3>
                             <div class="bg-[var(--bg-tertiary)] p-4 rounded-lg border border-[var(--border-primary)] space-y-4">
                                 {% if sso_enabled %}
@@ -757,6 +796,24 @@
                                     </select>
                                 </div>
                             </div>
+                        </div>
+
+                        <!-- Notes in summaries (#440) -->
+                        <div class="bg-[var(--bg-tertiary)] p-6 rounded-lg border border-[var(--border-primary)]">
+                            <input type="hidden" name="summary_notes_section" value="1">
+                            <h3 class="text-lg font-medium text-[var(--text-secondary)] mb-2">
+                                <i class="fas fa-sticky-note mr-2"></i>
+                                <span data-i18n="summaryNotes.title">Notes in Summaries</span>
+                            </h3>
+                            <p class="text-xs text-[var(--text-muted)] mb-4" data-i18n="summaryNotes.description">
+                                Your notes on a recording, such as the correct spelling of names, an agenda or text pasted from an email, can be given to the summarization agent as context. The transcript remains the record of what was said.
+                            </p>
+                            <label class="flex items-start space-x-3">
+                                <input type="checkbox" name="summary_include_notes" id="summary_include_notes"
+                                    {% if current_user.summary_include_notes %}checked{% endif %}
+                                    class="mt-1 h-4 w-4 text-[var(--border-accent)] focus:ring-[var(--border-focus)] border-[var(--border-secondary)] rounded">
+                                <span class="block text-sm font-medium text-[var(--text-primary)]" data-i18n="summaryNotes.label">Give the summarization agent my notes</span>
+                            </label>
                         </div>
 
                         <!-- Event Extraction Settings -->
@@ -923,6 +980,36 @@
                                 </details>
                             </div>
 
+                            <!-- Title Generation Section (#400) -->
+                            <div class="mt-8 pt-6 border-t border-[var(--border-secondary)]">
+                                <h3 class="text-base font-semibold text-[var(--text-primary)] mb-1">
+                                    <i class="fas fa-heading mr-2 text-[var(--text-accent)]"></i>
+                                    <span data-i18n="customPrompts.titleGeneration">Title Generation Prompt</span>
+                                </h3>
+                                <p class="text-xs text-[var(--text-muted)] mb-4" data-i18n="customPrompts.titleGenerationDesc">
+                                    Instructions for the titles generated for your recordings. Tag and folder title prompts take priority over this one.
+                                </p>
+                                <label for="title_prompt_custom" class="block text-sm font-medium text-[var(--text-muted)] mb-2">
+                                    <span data-i18n="customPrompts.yourTitlePrompt">Your Title Instructions</span>
+                                </label>
+                                <textarea name="title_prompt" id="title_prompt_custom" rows="4"
+                                    placeholder="e.g. Name the institution and the main speaker, then the topic. Leave blank to use the default."
+                                    data-i18n-placeholder="customPrompts.titlePromptPlaceholder"
+                                    class="w-full px-3 py-2 border border-[var(--border-secondary)] rounded-md shadow-sm focus:outline-none focus:ring-[var(--border-focus)] focus:border-[var(--border-focus)] sm:text-sm bg-[var(--bg-input)] text-[var(--text-primary)]">{{ current_user.title_prompt or '' }}</textarea>
+                                <p class="text-xs text-[var(--text-light)] mt-2" data-i18n="customPrompts.titlePromptNote">
+                                    The transcript, your output language and the rule to reply with the title alone are added automatically.
+                                </p>
+                                <div class="mt-4 p-4 bg-[var(--bg-secondary)] rounded-lg border border-[var(--border-secondary)]">
+                                    <h4 class="text-sm font-semibold text-[var(--text-accent)] mb-2">
+                                        <i class="fas fa-info-circle mr-1"></i>
+                                        <span data-i18n="customPrompts.currentDefaultTitlePrompt">Current default (used if you leave the field blank)</span>
+                                    </h4>
+                                    <div class="bg-[var(--bg-primary)] p-3 rounded border border-[var(--border-primary)]">
+                                        <pre class="text-xs text-[var(--text-muted)] whitespace-pre-wrap font-mono">{{ default_title_prompt_text }}</pre>
+                                    </div>
+                                </div>
+                            </div>
+
                             <!-- Transcription Hints Section -->
                             <div class="mt-8 pt-6 border-t border-[var(--border-secondary)]">
                                 <h3 class="text-base font-semibold text-[var(--text-primary)] mb-1">
@@ -1058,6 +1145,17 @@
                                         </select>
                                         <p class="text-xs text-[var(--text-light)] mt-1" data-i18n="account.languageForSummaries">Language for titles, summaries, and chat. Leave on Default to follow the model's own behaviour.</p>
                                     </div>
+                                    <div>
+                                        <label for="timezone_select" class="block text-sm font-medium text-[var(--text-muted)]" data-i18n="account.timezone">Timezone</label>
+                                        <select name="timezone" id="timezone_select"
+                                                data-current="{{ current_user.timezone or '' }}"
+                                                data-mode="{{ current_user.timezone_mode or 'auto' }}"
+                                                class="mt-1 block w-full px-3 py-2 border border-[var(--border-secondary)] rounded-md shadow-sm focus:outline-none focus:ring-[var(--border-focus)] focus:border-[var(--border-focus)] sm:text-sm bg-[var(--bg-input)] text-[var(--text-primary)]">
+                                            <option value="auto" id="timezone_auto_option">Automatic (this device)</option>
+                                        </select>
+                                        <input type="hidden" name="detected_timezone" id="detected_timezone" value="">
+                                        <p class="text-xs text-[var(--text-light)] mt-1" data-i18n="account.timezoneHelp">Used for dates in titles from naming templates. Dates shown on pages always follow this device.</p>
+                                    </div>
                                 </div>
 
                                 <h3 class="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wide pt-4" data-i18n="preferences.filenameDatesSection">Meeting date from filename</h3>
@@ -1104,6 +1202,18 @@
                                         <span class="block text-xs text-[var(--text-muted)] mt-0.5" data-i18n="preferences.showTimestampsSimpleViewHelp">Display a compact <code>mm:ss</code> timestamp next to each speaker label in the simple transcript view. The bubble view is unaffected.</span>
                                     </span>
                                 </label>
+
+                                {% if email_notifications_available %}
+                                <h3 class="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wide pt-4" data-i18n="preferences.notifications">Notifications</h3>
+                                <input type="hidden" name="email_notifications_shown" value="1">
+                                <label class="flex items-start gap-3 p-3 bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] rounded-md cursor-pointer hover:bg-[var(--bg-accent-hover)]">
+                                    <input type="checkbox" id="prefNotifyEmailOnCompletion" name="notify_email_on_completion" {% if current_user.notify_email_on_completion %}checked{% endif %} class="mt-1 h-4 w-4 text-[var(--text-accent)] border-[var(--border-secondary)] rounded focus:ring-[var(--border-focus)] bg-[var(--bg-input)]">
+                                    <span class="flex-1">
+                                        <span class="block text-sm font-medium text-[var(--text-primary)]" data-i18n="preferences.notifyEmailOnCompletion">Email me when a transcription finishes</span>
+                                        <span class="block text-xs text-[var(--text-muted)] mt-0.5" data-i18n="preferences.notifyEmailOnCompletionHelp">Sends a message to your account address when a recording finishes transcribing, and when one fails. Summaries are not included. Useful for long recordings you do not want to sit and wait for; less so if you upload many files at once, since each one sends its own message.</span>
+                                    </span>
+                                </label>
+                                {% endif %}
 
                                 <h3 class="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wide pt-4" data-i18n="preferences.transcriptEditor">Transcript editor</h3>
                                 <label class="flex items-start gap-3 p-3 bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] rounded-md cursor-pointer hover:bg-[var(--bg-accent-hover)]">
@@ -2298,7 +2408,7 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                 </p>
                 <div id="clearVoiceProfilesList" class="max-h-48 overflow-y-auto space-y-2 bg-[var(--bg-tertiary)] rounded-md p-3 border border-[var(--border-primary)] mb-4"></div>
                 <div class="banner banner--warn mb-2" style="display: flex; align-items: flex-start; gap: var(--sp-2);">
-                    <i class="fas fa-info-circle" style="margin-top: 2px;"></i>
+                    <i class="fas fa-exclamation-triangle" style="margin-top: 2px;"></i>
                     <div>
                         <div class="t-body-strong" style="margin-bottom: var(--sp-1);">What will happen</div>
                         <div class="t-meta">All voice embeddings and recognition data will be removed. Speaker names and usage history will be preserved.</div>
@@ -2399,6 +2509,28 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                             <option value="365">1 year</option>
                         </select>
                         <p class="text-xs text-[var(--text-light)] mt-1">When this token should expire</p>
+                    </div>
+
+                    <div>
+                        <label for="tokenScopePreset" class="block text-sm font-medium text-[var(--text-secondary)] mb-1">Access</label>
+                        <select id="tokenScopePreset" class="w-full px-3 py-2 border border-[var(--border-secondary)] rounded-md focus:outline-none focus:ring-2 focus:ring-[var(--border-focus)] bg-[var(--bg-input)] text-[var(--text-primary)]">
+                            <option value="read">Read only</option>
+                            <option value="read,write,upload">Integration (read, write, upload)</option>
+                            <option value="upload">Recorder (upload only)</option>
+                            <option value="full">Full access (everything this account can do)</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                        <div id="tokenScopeBoxes" class="hidden mt-2 grid gap-1">
+                            <label class="flex items-start gap-2 text-xs text-[var(--text-secondary)]"><input type="checkbox" class="token-scope-box mt-0.5" value="read"> <span><span class="font-medium text-[var(--text-primary)]">read</span>: Read recordings, transcripts, summaries, notes, tags and folders</span></label>
+                            <label class="flex items-start gap-2 text-xs text-[var(--text-secondary)]"><input type="checkbox" class="token-scope-box mt-0.5" value="write"> <span><span class="font-medium text-[var(--text-primary)]">write</span>: Edit recordings, notes, summaries, tags, folders and speakers</span></label>
+                            <label class="flex items-start gap-2 text-xs text-[var(--text-secondary)]"><input type="checkbox" class="token-scope-box mt-0.5" value="upload"> <span><span class="font-medium text-[var(--text-primary)]">upload</span>: Upload recordings</span></label>
+                            <label class="flex items-start gap-2 text-xs text-[var(--text-secondary)]"><input type="checkbox" class="token-scope-box mt-0.5" value="process"> <span><span class="font-medium text-[var(--text-primary)]">process</span>: Transcribe, summarize, chat and other model calls</span></label>
+                            <label class="flex items-start gap-2 text-xs text-[var(--text-secondary)]"><input type="checkbox" class="token-scope-box mt-0.5" value="share"> <span><span class="font-medium text-[var(--text-primary)]">share</span>: Create and revoke share links</span></label>
+                            <label class="flex items-start gap-2 text-xs text-[var(--text-secondary)]"><input type="checkbox" class="token-scope-box mt-0.5" value="delete"> <span><span class="font-medium text-[var(--text-primary)]">delete</span>: Delete recordings, audio, tags, folders and speakers</span></label>
+                            <label class="flex items-start gap-2 text-xs text-[var(--text-secondary)]"><input type="checkbox" class="token-scope-box mt-0.5" value="webhooks"> <span><span class="font-medium text-[var(--text-primary)]">webhooks</span>: Manage webhooks</span></label>
+                            <label class="flex items-start gap-2 text-xs text-[var(--text-secondary)]"><input type="checkbox" class="token-scope-box mt-0.5" value="account"> <span><span class="font-medium text-[var(--text-primary)]">account</span>: Change account settings</span></label>
+                        </div>
+                        <p class="text-xs text-[var(--text-light)] mt-1">Give an integration only the access it needs, and an expiry date. Scoped tokens work only in the Authorization header, and only on the API.</p>
                     </div>
 
                     <div class="bg-amber-50 border border-amber-200 rounded-lg p-3">
@@ -3120,8 +3252,8 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                 const activeFilter = searchInput ? searchInput.value : '';
 
                 speakersTabData.forEach(speaker => {
-                    const createdDate = parseInstant(speaker.created_at).toLocaleDateString();
-                    const lastUsedDate = parseInstant(speaker.last_used).toLocaleDateString();
+                    const createdDate = parseInstant(speaker.created_at).toLocaleDateString(window.i18n?.getIntlLocale?.());
+                    const lastUsedDate = parseInstant(speaker.last_used).toLocaleDateString(window.i18n?.getIntlLocale?.());
 
                     // Voice profile status
                     const hasVoiceProfile = speaker.embedding_count && speaker.embedding_count > 0;
@@ -3169,8 +3301,8 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                             ${hasVoiceProfile ? `
                             <div class="flex items-center justify-between gap-2 mb-2 px-2 py-1 bg-[var(--bg-secondary)] rounded">
                                 <div class="flex items-center gap-1.5 min-w-0">
-                                    <i class="fas fa-eraser text-[var(--text-accent)] text-[10px] flex-shrink-0"></i>
-                                    <span class="text-[10px] text-[var(--text-muted)] truncate">${speaker.embedding_count} sample${speaker.embedding_count !== 1 ? 's' : ''}</span>
+                                    <i class="fas fa-wave-square text-[var(--text-accent)] text-[10px] flex-shrink-0"></i>
+                                    <span class="voice-summary-text text-[10px] text-[var(--text-muted)] truncate">${escapeHtml(voiceSummaryText(speaker))}</span>
                                 </div>
                                 ${confidenceBadge}
                             </div>
@@ -3203,6 +3335,17 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                                 </div>
                                 <div class="snippets-content"></div>
                             </div>
+
+                            ${hasVoiceProfile ? `
+                            <!-- Voice profile: the samples matching is built from -->
+                            <button class="view-voice-samples-btn w-full mt-1 px-2 py-1 text-[10px] bg-[var(--bg-secondary)] hover:bg-[var(--bg-primary)] text-[var(--text-secondary)] rounded border border-[var(--border-secondary)] transition-colors"
+                                    data-speaker-id="${speaker.id}">
+                                <i class="fas fa-wave-square mr-1"></i>
+                                <span>${escapeHtml(vt('voiceProfiles.manage', 'Voice profile'))}</span>
+                                <i class="fas fa-chevron-down ml-1 transition-transform duration-200"></i>
+                            </button>
+                            <div class="voice-samples-container mt-2 hidden"></div>
+                            ` : ''}
                         </div>
                     `;
 
@@ -3218,6 +3361,12 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                     const viewSnippetsBtn = speakerCard.querySelector('.view-snippets-btn');
                     const snippetsContainer = speakerCard.querySelector('.snippets-container');
                     viewSnippetsBtn.addEventListener('click', () => toggleSpeakerSnippets(speaker.id, viewSnippetsBtn, snippetsContainer));
+
+                    const voiceBtn = speakerCard.querySelector('.view-voice-samples-btn');
+                    if (voiceBtn) {
+                        const voiceContainer = speakerCard.querySelector('.voice-samples-container');
+                        voiceBtn.addEventListener('click', () => toggleVoiceSamples(speaker, voiceBtn, voiceContainer, speakerCard));
+                    }
 
                     speakersTabGrid.appendChild(speakerCard);
                 });
@@ -3288,6 +3437,131 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
             }
 
             // Toggle speaker snippets
+            // ---- Voice profile samples ------------------------------------
+            function vt(key, fallback, params) {
+                if (window.i18n) {
+                    const value = window.i18n.t(key, params || {});
+                    if (value && value !== key) return value;
+                }
+                return fallback;
+            }
+
+            function voiceSummaryText(speaker) {
+                const v = speaker.voice || {};
+                const samples = v.current_space_samples != null ? v.current_space_samples : (speaker.embedding_count || 0);
+                const variants = v.variant_count || (samples ? 1 : 0);
+                let text = vt(samples === 1 ? 'voiceProfiles.samples' : 'voiceProfiles.samplesPlural',
+                              `${samples} sample${samples === 1 ? '' : 's'}`, { count: samples });
+                if (variants > 1) {
+                    text += ' · ' + vt('voiceProfiles.variantsPlural', `${variants} voice variants`, { count: variants });
+                }
+                if (v.other_space_samples) {
+                    text += ' · ' + vt('voiceProfiles.otherModel', `${v.other_space_samples} from another model`, { count: v.other_space_samples });
+                }
+                return text;
+            }
+
+            function formatSeconds(sec) {
+                if (sec == null) return '';
+                const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+                return `${m}:${String(s).padStart(2, '0')}`;
+            }
+
+            async function toggleVoiceSamples(speaker, button, container, card) {
+                const chevron = button.querySelector('.fa-chevron-down');
+                if (!container.classList.contains('hidden')) {
+                    container.classList.add('hidden');
+                    chevron.classList.remove('rotate-180');
+                    return;
+                }
+                container.classList.remove('hidden');
+                chevron.classList.add('rotate-180');
+                await renderVoiceSamples(speaker, container, card);
+            }
+
+            async function renderVoiceSamples(speaker, container, card) {
+                container.innerHTML = '<div class="text-center py-3"><i class="fas fa-spinner fa-spin text-[var(--text-muted)] text-xs"></i></div>';
+                try {
+                    const response = await fetch(`/speakers/${speaker.id}/voice_samples`);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const data = await response.json();
+                    const samples = data.samples || [];
+                    container.innerHTML = '';
+                    const hint = document.createElement('p');
+                    hint.className = 'text-[10px] text-[var(--text-muted)] mb-1';
+                    hint.textContent = vt('voiceProfiles.hint', 'Voice matching compares new recordings with these samples. Remove one that belongs to someone else.');
+                    container.appendChild(hint);
+                    if (!samples.length) {
+                        const empty = document.createElement('p');
+                        empty.className = 'text-[10px] text-[var(--text-muted)] italic';
+                        empty.textContent = vt('voiceProfiles.empty', 'No voice samples.');
+                        container.appendChild(empty);
+                        return;
+                    }
+                    samples.forEach(sample => {
+                        const row = document.createElement('div');
+                        row.className = 'flex items-center gap-2 py-1 border-t border-[var(--border-primary)] text-[10px]';
+                        const info = document.createElement('div');
+                        info.className = 'flex-1 min-w-0';
+                        const title = document.createElement(sample.recording_id ? 'a' : 'span');
+                        title.className = 'block truncate text-[var(--text-secondary)]' + (sample.recording_id ? ' hover:text-[var(--text-accent)]' : '');
+                        if (sample.recording_id) title.href = `/recordings/${sample.recording_id}`;
+                        title.textContent = sample.source === 'legacy'
+                            ? vt('voiceProfiles.legacy', 'Earlier voice profile')
+                            : (sample.recording_title || vt('voiceProfiles.deletedRecording', 'Deleted recording'));
+                        const meta = document.createElement('span');
+                        meta.className = 'block truncate text-[var(--text-muted)]';
+                        const parts = [];
+                        if (sample.label) parts.push(sample.label);
+                        if (sample.speech_seconds != null) parts.push(formatSeconds(sample.speech_seconds));
+                        parts.push(sample.source === 'auto' ? vt('voiceProfiles.auto', 'auto-labelled')
+                                 : sample.source === 'legacy' ? vt('voiceProfiles.legacyWeight', `weight ${sample.weight}`, { count: sample.weight })
+                                 : vt('voiceProfiles.confirmed', 'confirmed'));
+                        if (!sample.in_current_space) parts.push(vt('voiceProfiles.anotherModel', 'another model'));
+                        meta.textContent = parts.join(' · ');
+                        info.appendChild(title);
+                        info.appendChild(meta);
+                        const remove = document.createElement('button');
+                        remove.className = 'p-1 text-[var(--text-muted)] hover:text-[var(--text-danger)] rounded flex-shrink-0';
+                        remove.title = vt('voiceProfiles.remove', 'Remove this sample');
+                        remove.setAttribute('aria-label', remove.title);
+                        remove.innerHTML = '<i class="fas fa-times"></i>';
+                        remove.addEventListener('click', async () => {
+                            remove.disabled = true;
+                            try {
+                                const csrf = document.querySelector('meta[name=csrf-token]')?.getAttribute('content');
+                                // The pre-sample profile has no row of its own: removing it
+                                // clears the profile.
+                                const r = sample.id == null
+                                    ? await fetch(`/speakers/${speaker.id}/clear_embeddings`, {
+                                        method: 'POST', headers: csrf ? { 'X-CSRFToken': csrf } : {} })
+                                    : await fetch(`/speakers/${speaker.id}/voice_samples/${sample.id}`, {
+                                        method: 'DELETE', headers: csrf ? { 'X-CSRFToken': csrf } : {} });
+                                const body = await r.json();
+                                if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+                                const voice = body.summary || { sample_count: 0, current_space_samples: 0, variant_count: 0, other_space_samples: 0 };
+                                Object.assign(speaker, body.speaker || {}, { voice });
+                                const summaryEl = card.querySelector('.voice-summary-text');
+                                if (summaryEl) summaryEl.textContent = voiceSummaryText(speaker);
+                                await renderVoiceSamples(speaker, container, card);
+                            } catch (error) {
+                                remove.disabled = false;
+                                showToast(error.message, 'error');
+                            }
+                        });
+                        row.appendChild(info);
+                        row.appendChild(remove);
+                        container.appendChild(row);
+                    });
+                } catch (error) {
+                    container.innerHTML = '';
+                    const err = document.createElement('p');
+                    err.className = 'text-[10px] text-[var(--text-danger)]';
+                    err.textContent = error.message;
+                    container.appendChild(err);
+                }
+            }
+
             async function toggleSpeakerSnippets(speakerId, button, container) {
                 const isExpanded = !container.classList.contains('hidden');
                 const chevron = button.querySelector('.fa-chevron-down');
@@ -3846,28 +4120,82 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
             async function loadShares() {
                 sharesContainer.innerHTML = '<div class="text-center"><i class="fas fa-spinner fa-spin text-2xl"></i></div>';
                 try {
-                    const response = await fetch('/api/shares');
-                    const shares = await response.json();
-                    if (!response.ok) throw new Error(shares.error || 'Failed to load');
-                    
-                    if (shares.length === 0) {
-                        sharesContainer.innerHTML = `<p class="text-center text-[var(--text-muted)]">${t('sharedTranscriptsPage.noSharedTranscripts')}</p>`;
-                        return;
-                    }
+                    // Public links, recordings shared with people and groups,
+                    // and recordings shared with this user (#416).
+                    const response = await fetch('/api/shares/overview');
+                    const overview = await response.json();
+                    if (!response.ok) throw new Error(overview.error || 'Failed to load');
+                    const shares = overview.public_links || [];
 
                     sharesContainer.innerHTML = '';
+                    const section = (icon, title) => {
+                        const el = document.createElement('section');
+                        el.className = 'space-y-3';
+                        el.innerHTML = `<h3 class="text-lg font-medium text-[var(--text-secondary)] flex items-center gap-2"><i class="fas ${icon}"></i>${escapeHtml(title)}</h3>`;
+                        sharesContainer.appendChild(el);
+                        return el;
+                    };
+                    const empty = (el, text) => {
+                        const p = document.createElement('p');
+                        p.className = 'text-sm text-[var(--text-muted)]';
+                        p.textContent = text;
+                        el.appendChild(p);
+                    };
+                    const permissions = (item) => (item.can_edit ? t('sharedTranscripts.canEdit') : t('sharedTranscripts.canView'))
+                        + (item.can_reshare ? ' · ' + t('sharedTranscripts.canReshare') : '')
+                        + (item.source && item.source.type !== 'manual'
+                            ? ' · ' + t(item.source.type === 'group_tag' ? 'sharedTranscripts.viaGroupTag' : 'sharedTranscripts.viaGroupFolder', { name: item.source.name || '' })
+                            : '');
+
+                    const publicSection = section('fa-link', t('sharedTranscripts.publicLinks'));
+                    if (shares.length === 0) empty(publicSection, t('sharedTranscripts.noPublicLinks'));
+
+                    if (overview.internal_sharing_enabled) {
+                        const peopleSection = section('fa-user-friends', t('sharedTranscripts.peopleAndGroups'));
+                        if (!(overview.shared_by_me || []).length) empty(peopleSection, t('sharedTranscripts.noInternalShares'));
+                        (overview.shared_by_me || []).forEach(entry => {
+                            const card = document.createElement('div');
+                            // Wide screens: the recording on the left, its people on the right.
+                            card.className = 'bg-[var(--bg-tertiary)] px-4 py-3 rounded-lg border border-[var(--border-primary)] lg:grid lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:gap-x-6 lg:items-start';
+                            card.innerHTML = `<a href="/recordings/${entry.recording_id}" dir="auto" class="font-semibold hover:underline block truncate lg:py-2" title="${escapeHtml(entry.recording_title)}">${escapeHtml(entry.recording_title)}</a>
+                                <ul class="mt-2 lg:mt-0 divide-y divide-[var(--border-primary)]">${entry.recipients.map(p => `
+                                    <li class="py-2 flex items-center justify-between gap-3">
+                                        <div class="min-w-0"><p class="text-sm font-medium">${escapeHtml(p.username || '')}</p>
+                                        <p class="text-xs text-[var(--text-muted)]">${escapeHtml(permissions(p))}</p></div>
+                                        ${p.revocable
+                                            ? `<button data-internal-share-id="${p.share_id}" class="revoke-internal-btn text-sm px-2 py-1 rounded border border-[var(--border-secondary)] hover:bg-[var(--bg-secondary)]"><i class="fas fa-user-times mr-1"></i>${escapeHtml(t('sharedTranscripts.revoke'))}</button>`
+                                            : `<span class="text-xs text-[var(--text-muted)] text-right max-w-[12rem]">${escapeHtml(t('sharedTranscripts.groupShareNote'))}</span>`}
+                                    </li>`).join('')}</ul>`;
+                            peopleSection.appendChild(card);
+                        });
+
+                        const withMeSection = section('fa-inbox', t('sharedTranscripts.sharedWithMe'));
+                        if (!(overview.shared_with_me || []).length) empty(withMeSection, t('sharedTranscripts.nothingSharedWithMe'));
+                        (overview.shared_with_me || []).forEach(item => {
+                            const row = document.createElement('div');
+                            row.className = 'bg-[var(--bg-tertiary)] px-4 py-3 rounded-lg border border-[var(--border-primary)] flex items-center justify-between gap-3';
+                            const from = item.owner_username ? t('sharedTranscripts.fromOwner', { name: item.owner_username }) + ' · ' : '';
+                            row.innerHTML = `<div class="min-w-0"><a href="/recordings/${item.recording_id}" dir="auto" class="font-semibold hover:underline">${escapeHtml(item.recording_title)}</a>
+                                <p class="text-xs text-[var(--text-muted)]">${escapeHtml(from + permissions(item))} · ${formatInstant(item.created_at)}</p></div>`;
+                            withMeSection.appendChild(row);
+                        });
+                    }
+
+                    document.querySelectorAll('.revoke-internal-btn').forEach(btn => {
+                        btn.addEventListener('click', handleRevokeInternalShare);
+                    });
+
                     shares.forEach(share => {
                         const shareEl = document.createElement('div');
-                        shareEl.className = 'bg-[var(--bg-tertiary)] p-4 rounded-lg border border-[var(--border-primary)]';
+                        // One row per link on wide screens: title and date, the
+                        // two toggles, the link, delete. Stacked when narrow.
+                        shareEl.className = 'bg-[var(--bg-tertiary)] px-4 py-3 rounded-lg border border-[var(--border-primary)] grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-3 items-center lg:grid-cols-[minmax(0,3fr)_auto_minmax(0,2fr)_auto]';
                         shareEl.innerHTML = `
-                            <div class="flex justify-between items-start">
-                                <div>
-                                    <p class="font-semibold">${escapeHtml(share.recording_title)}</p>
-                                    <p class="text-sm text-[var(--text-muted)]">${t('sharedTranscripts.sharedOn')}: ${formatInstant(share.created_at)}</p>
-                                </div>
-                                <button data-share-id="${share.id}" class="delete-share-btn text-[var(--text-danger)] hover:opacity-80 p-1"><i class="fas fa-trash"></i></button>
+                            <div class="min-w-0 order-1">
+                                <a href="/recordings/${share.recording_id}" dir="auto" class="font-semibold hover:underline block truncate" title="${escapeHtml(share.recording_title)}">${escapeHtml(share.recording_title)}</a>
+                                <p class="text-sm text-[var(--text-muted)]">${t('sharedTranscripts.sharedOn')}: ${formatInstant(share.created_at)}</p>
                             </div>
-                            <div class="mt-4 flex items-center gap-4">
+                            <div class="order-3 col-span-2 lg:order-2 lg:col-span-1 flex items-center gap-4 whitespace-nowrap">
                                 <label class="flex items-center text-sm">
                                     <input type="checkbox" data-share-id="${share.id}" data-share-prop="share_summary" class="share-checkbox h-4 w-4 rounded border-[var(--border-secondary)] text-[var(--text-accent)] focus:ring-[var(--border-focus)]" ${share.share_summary ? 'checked' : ''}>
                                     <span class="ml-2">${t('sharedTranscripts.shareSummary')}</span>
@@ -3877,14 +4205,15 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                                     <span class="ml-2">${t('sharedTranscripts.shareNotes')}</span>
                                 </label>
                             </div>
-                            <div class="mt-4 relative">
+                            <div class="order-4 col-span-2 lg:order-3 lg:col-span-1 relative min-w-0">
                                 <input value="{{ request.url_root }}share/${share.public_id}" readonly class="share-link-input w-full px-3 py-2 pr-12 bg-[var(--bg-input)] border border-[var(--border-secondary)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--border-accent)]">
                                 <button class="copy-share-link-btn absolute right-1.5 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded bg-[var(--bg-button)] text-[var(--text-button)] hover:bg-[var(--bg-button-hover)] transition-colors" title="${t('buttons.copy')}">
                                     <i class="fas fa-copy text-xs"></i>
                                 </button>
                             </div>
+                            <button data-share-id="${share.id}" class="delete-share-btn order-2 lg:order-4 justify-self-end text-[var(--text-danger)] hover:opacity-80 p-1" title="${t('buttons.delete')}"><i class="fas fa-trash"></i></button>
                         `;
-                        sharesContainer.appendChild(shareEl);
+                        publicSection.appendChild(shareEl);
                     });
 
                     document.querySelectorAll('.delete-share-btn').forEach(btn => {
@@ -3922,6 +4251,28 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
 
                 } catch (error) {
                     sharesContainer.innerHTML = `<p class="text-center text-[var(--text-danger)]">${t('errors.loadingShares')}: ${error.message}</p>`;
+                }
+            }
+
+            // First click asks, second revokes (#416).
+            async function handleRevokeInternalShare(event) {
+                const button = event.currentTarget;
+                if (!button.dataset.confirming) {
+                    button.dataset.confirming = '1';
+                    button.innerHTML = `<i class="fas fa-user-times mr-1"></i>${escapeHtml(t('sharedTranscripts.confirmRevoke'))}`;
+                    button.classList.add('text-[var(--text-danger)]');
+                    return;
+                }
+                try {
+                    const csrfToken = document.querySelector('meta[name=csrf-token]')?.getAttribute('content');
+                    const response = await fetch(`/api/internal-shares/${button.dataset.internalShareId}`, {
+                        method: 'DELETE',
+                        headers: csrfToken ? { 'X-CSRFToken': csrfToken } : {},
+                    });
+                    if (!response.ok) throw new Error('Failed to revoke');
+                    loadShares();
+                } catch (error) {
+                    alert(t('sharedTranscripts.revokeFailed'));
                 }
             }
 
@@ -4003,7 +4354,7 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                 if (!dateString) return '';
                 const d = parseInstant(dateString);
                 if (isNaN(d.getTime())) return dateString;
-                return d.toLocaleString();
+                return d.toLocaleString(window.i18n?.getIntlLocale?.());
             }
 
             // ---- AJAX form submission for the settings forms --------
@@ -4099,67 +4450,8 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
             // Update footer on page load
             updateFooter();
         
-        // Dark mode toggle functionality
-        const darkModeToggle = document.getElementById('darkModeToggle');
-        const darkModeIcon = document.getElementById('darkModeIcon');
-        
-        // Initialize dark mode based on localStorage or system preference
-        function initializeDarkMode() {
-            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-            const savedMode = localStorage.getItem('darkMode');
-            
-            if (savedMode === 'true' || (savedMode === null && prefersDark)) {
-                document.documentElement.classList.add('dark');
-                darkModeIcon.classList.remove('fa-moon');
-                darkModeIcon.classList.add('fa-sun');
-            } else {
-                document.documentElement.classList.remove('dark');
-                darkModeIcon.classList.remove('fa-sun');
-                darkModeIcon.classList.add('fa-moon');
-            }
-        }
-        
-        // Toggle dark mode. Re-applies the saved color scheme so the
-        // mode-prefix (theme-light-* vs theme-dark-*) flips along with
-        // the dark class — otherwise switching from dark→light leaves
-        // the previous theme-dark-{amber|emerald|etc.} class on
-        // documentElement and the page falls back to the default blue
-        // light palette because no theme-light-* class was added.
-        darkModeToggle.addEventListener('click', () => {
-            const isDarkMode = document.documentElement.classList.toggle('dark');
-            localStorage.setItem('darkMode', isDarkMode);
-
-            if (isDarkMode) {
-                darkModeIcon.classList.remove('fa-moon');
-                darkModeIcon.classList.add('fa-sun');
-            } else {
-                darkModeIcon.classList.remove('fa-sun');
-                darkModeIcon.classList.add('fa-moon');
-            }
-
-            // Re-apply the color scheme for the new mode.
-            if (typeof applyTheme === 'function') {
-                applyTheme();
-            }
-        });
-        
-        // User dropdown functionality
-        const userDropdownButton = document.getElementById('userDropdownButton');
-        const userDropdownMenu = document.getElementById('userDropdownMenu');
-        
-        userDropdownButton.addEventListener('click', () => {
-            userDropdownMenu.classList.toggle('hidden');
-        });
-        
-        // Close dropdown when clicking outside
-        document.addEventListener('click', (event) => {
-            if (!userDropdownButton.contains(event.target) && !userDropdownMenu.contains(event.target)) {
-                userDropdownMenu.classList.add('hidden');
-            }
-        });
-        
-        // Initialize dark mode on page load
-        initializeDarkMode();
+        // The header's dark mode switch and user menu live in the shared
+        // header (components/header-controls.html, static/js/global-header.js).
         
         // Change Password Modal functionality
         const changePasswordBtn = document.getElementById('changePasswordBtn');
@@ -4314,8 +4606,8 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
             const div = document.createElement('div');
             div.className = 'flex items-center justify-between p-3 bg-[var(--bg-tertiary)] rounded-lg border border-[var(--border-primary)] hover:bg-[var(--bg-accent)] transition-colors duration-200';
             
-            const createdDate = parseInstant(speaker.created_at).toLocaleDateString();
-            const lastUsedDate = parseInstant(speaker.last_used).toLocaleDateString();
+            const createdDate = parseInstant(speaker.created_at).toLocaleDateString(window.i18n?.getIntlLocale?.());
+            const lastUsedDate = parseInstant(speaker.last_used).toLocaleDateString(window.i18n?.getIntlLocale?.());
             
             div.innerHTML = `
                 <div class="flex-1">
@@ -4551,12 +4843,12 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
         // are only meaningful once a group is chosen).
         const TAG_TAB_FIELDS = {
             tagTabTranscription: ['tagLanguage','tagMinSpeakers','tagMaxSpeakers','tagHotwords','tagInitialPrompt','tagTranscriptionModel','tagRetentionDays','tagProtectFromDeletion'],
-            tagTabSummary: ['tagCustomPrompt','tagNamingTemplate','tagExportTemplate'],
+            tagTabSummary: ['tagCustomPrompt','tagTitlePrompt','tagNamingTemplate','tagExportTemplate'],
             tagTabSharing: ['tagGroupId'],
         };
         const FOLDER_TAB_FIELDS = {
             folderTabTranscription: ['folderLanguage','folderMinSpeakers','folderMaxSpeakers','folderHotwords','folderInitialPrompt','folderTranscriptionModel','folderRetentionDays','folderProtectFromDeletion'],
-            folderTabSummary: ['folderCustomPrompt','folderNamingTemplate','folderExportTemplate'],
+            folderTabSummary: ['folderCustomPrompt','folderTitlePrompt','folderNamingTemplate','folderExportTemplate'],
             folderTabSharing: ['folderGroupId'],
         };
 
@@ -4983,6 +5275,7 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                 document.getElementById('tagName').value = tag.name;
                 document.getElementById('tagColor').value = tag.color;
                 document.getElementById('tagCustomPrompt').value = tag.custom_prompt || '';
+                document.getElementById('tagTitlePrompt').value = tag.title_prompt || '';
 
                 // Populate group selection
                 const groupIdSelect = document.getElementById('tagGroupId');
@@ -5524,6 +5817,7 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                 document.getElementById('folderName').value = folder.name;
                 document.getElementById('folderColor').value = folder.color;
                 document.getElementById('folderCustomPrompt').value = folder.custom_prompt || '';
+                document.getElementById('folderTitlePrompt').value = folder.title_prompt || '';
                 window.SpeakrOrganizer.setLanguageValue('folderLanguage', folder.default_language);
                 var minField = document.getElementById('folderMinSpeakers');
                 if (minField) minField.value = folder.default_min_speakers || '';
@@ -5980,8 +6274,8 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                 activeTokensList.innerHTML = activeTokens.map(token => {
                     const statusClass = getTokenStatusClass(token);
                     const status = getTokenStatus(token);
-                    const createdDate = parseInstant(token.created_at).toLocaleDateString();
-                    const lastUsed = token.last_used_at ? parseInstant(token.last_used_at).toLocaleDateString() : null;
+                    const createdDate = parseInstant(token.created_at).toLocaleDateString(window.i18n?.getIntlLocale?.());
+                    const lastUsed = token.last_used_at ? parseInstant(token.last_used_at).toLocaleDateString(window.i18n?.getIntlLocale?.()) : null;
 
                     return `
                         <div class="bg-[var(--bg-tertiary)] rounded-lg border border-[var(--border-primary)] hover:border-[var(--border-accent)] transition-colors duration-200">
@@ -6014,12 +6308,18 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                                     </div>
                                 </div>
 
+                                <!-- Scopes -->
+                                <div class="mt-2 text-[10px] text-[var(--text-muted)]">
+                                    <i class="fas fa-shield-alt opacity-60"></i>
+                                    ${(token.scopes || ['full']).includes('full') ? 'Full access' : escapeHtml((token.scopes || []).join(', '))}
+                                </div>
+
                                 <!-- Expiration badge -->
                                 <div class="mt-2">
                                     ${token.expires_at ? `
                                         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-800">
                                             <i class="fas fa-hourglass-half"></i>
-                                            Expires ${parseInstant(token.expires_at).toLocaleDateString()}
+                                            Expires ${parseInstant(token.expires_at).toLocaleDateString(window.i18n?.getIntlLocale?.())}
                                         </span>
                                     ` : `
                                         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600">
@@ -6046,8 +6346,13 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
 
         function formatTokenDate(dateString) {
             if (!dateString) return 'Never';
-            const date = new Date(dateString);
-            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+            // Naive UTC from the server: read as UTC, show in local time (#412).
+            let s = dateString;
+            if (typeof s === 'string' && /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(s) && !/(?:Z|[+-]\d{2}:?\d{2})$/.test(s)) {
+                s = s.replace(' ', 'T') + 'Z';
+            }
+            const date = new Date(s);
+            return date.toLocaleDateString(window.i18n?.getIntlLocale?.()) + ' ' + date.toLocaleTimeString(window.i18n?.getIntlLocale?.());
         }
 
         function getTokenStatus(token) {
@@ -6170,12 +6475,25 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
             }
         });
 
+        document.getElementById('tokenScopePreset')?.addEventListener('change', (e) => {
+            document.getElementById('tokenScopeBoxes').classList.toggle('hidden', e.target.value !== 'custom');
+        });
+
         // Form submission handler
         createTokenForm?.addEventListener('submit', async (e) => {
             e.preventDefault();
 
             const tokenName = document.getElementById('tokenNameInput').value.trim();
             const expiresInDays = parseInt(document.getElementById('tokenExpirationSelect').value);
+            // Scopes (mailr spec G1): a preset, or the ticked boxes for Custom.
+            const preset = document.getElementById('tokenScopePreset').value;
+            const scopes = preset === 'custom'
+                ? Array.from(document.querySelectorAll('.token-scope-box:checked')).map(b => b.value)
+                : preset.split(',');
+            if (!scopes.length) {
+                showToast('Choose at least one kind of access', 'error');
+                return;
+            }
 
             if (!tokenName) {
                 showToast('Please enter a token name', 'error');
@@ -6192,12 +6510,20 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
                     },
                     body: JSON.stringify({
                         name: tokenName,
-                        expires_in_days: expiresInDays
+                        expires_in_days: expiresInDays,
+                        scopes: scopes
                     })
                 });
 
                 if (!response.ok) {
                     const errorData = await response.json();
+                    // The account holds as many active tokens as the server allows (#484).
+                    if (errorData.code === 'token_limit_reached') {
+                        const key = 'apiTokens.limitReached';
+                        const text = window.i18n ? window.i18n.t(key, { max: errorData.max_tokens }) : key;
+                        showToast(text !== key ? text : errorData.error, 'error');
+                        return;
+                    }
                     throw new Error(errorData.error || 'Failed to create token');
                 }
 
@@ -7610,5 +7936,38 @@ curl "https://your-speakr-instance.com/api/recordings?token=YOUR_TOKEN_HERE"</co
     <!-- Webhooks tab logic (#275) -->
     <script src="{{ url_for('static', filename='js/account-webhooks.js') }}"></script>
 
+    <script>
+        // Timezone select (#412): every zone the browser knows; "Automatic"
+        // follows this device. The detected zone goes with the form.
+        (function () {
+            var sel = document.getElementById('timezone_select');
+            if (!sel) return;
+            var detected = '';
+            try { detected = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) {}
+            document.getElementById('detected_timezone').value = detected;
+            var auto = document.getElementById('timezone_auto_option');
+            if (detected) auto.dataset.detected = detected;
+            var zones = [];
+            try { zones = Intl.supportedValuesOf('timeZone'); } catch (e) {}
+            var current = sel.dataset.current;
+            if (current && zones.indexOf(current) === -1) zones.push(current);
+            zones.forEach(function (z) {
+                var o = document.createElement('option');
+                o.value = z;
+                o.textContent = z.replace(/_/g, ' ');
+                sel.appendChild(o);
+            });
+            sel.value = (sel.dataset.mode === 'fixed' && current) ? current : 'auto';
+            function label() {
+                var base = (window.i18n && window.i18n.t) ? window.i18n.t('account.timezoneAutomatic') : 'Automatic (this device)';
+                auto.textContent = detected ? base + ': ' + detected.replace(/_/g, ' ') : base;
+            }
+            // Set after translations load (the label carries the detected zone,
+            // so it is not a plain data-i18n element).
+            label();
+            if (window.i18n && window.i18n.ready) window.i18n.ready.then(label);
+            window.addEventListener('i18nReady', label);
+        })();
+    </script>
 </body>
 </html>

@@ -57,7 +57,17 @@ ASR_BASE_URL = os.environ.get('ASR_BASE_URL')
 if ASR_BASE_URL:
     ASR_BASE_URL = ASR_BASE_URL.split('#')[0].strip()
 
-if USE_ASR_ENDPOINT:
+# The ASR connector is active with ASR_BASE_URL alone, or by name; the
+# USE_ASR_ENDPOINT flag is deprecated. Reading these settings only behind the
+# flag dropped ASR_MIN_SPEAKERS / ASR_MAX_SPEAKERS for every installation set
+# up as documented (#415).
+_ASR_CONNECTOR_ACTIVE = (
+    USE_ASR_ENDPOINT
+    or bool(ASR_BASE_URL)
+    or os.environ.get('TRANSCRIPTION_CONNECTOR', '').strip().lower() == 'asr_endpoint'
+)
+
+if _ASR_CONNECTOR_ACTIVE:
     ASR_DIARIZE = os.environ.get('ASR_DIARIZE', 'true').lower() == 'true'
     ASR_MIN_SPEAKERS = os.environ.get('ASR_MIN_SPEAKERS')
     ASR_MAX_SPEAKERS = os.environ.get('ASR_MAX_SPEAKERS')
@@ -145,8 +155,10 @@ def initialize_config(app):
 
     client = None
     try:
+        from src.services.llm import llm_timeout, LLM_MAX_RETRIES, TEXT_MODEL_CONFIGURED
+        if not TEXT_MODEL_CONFIGURED:
+            raise RuntimeError("no text model configured (set TEXT_MODEL_BASE_URL, and TEXT_MODEL_API_KEY for a hosted service)")
         api_key = TEXT_MODEL_API_KEY or "not-needed"
-        from src.services.llm import llm_timeout, LLM_MAX_RETRIES
         client = OpenAI(api_key=api_key, base_url=TEXT_MODEL_BASE_URL, http_client=http_client_no_proxy, timeout=llm_timeout, max_retries=LLM_MAX_RETRIES)
         app.logger.info(f"LLM client initialized: {TEXT_MODEL_BASE_URL} / {TEXT_MODEL_NAME}")
     except Exception as e:

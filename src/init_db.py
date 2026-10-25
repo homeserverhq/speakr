@@ -26,7 +26,7 @@ from src.utils import (
     migration_lock,
     run_once,
 )
-from src.utils.database import ensure_migration_ledger
+from src.utils.database import drop_index_if_exists, ensure_migration_ledger
 
 # Configuration
 ENABLE_INQUIRE_MODE = os.environ.get('ENABLE_INQUIRE_MODE', 'false').lower() == 'true'
@@ -105,6 +105,24 @@ def _remove_orphaned_user_new(engine, app):
         app.logger.warning(f"Could not clean up orphaned user_new table: {e}")
 
 
+def _remove_orphaned_speaker_rows(engine, app):
+    """Delete speaker snippets and voice samples whose speaker or recording is gone.
+
+    SQLite does not enforce ON DELETE CASCADE, and before #475 "delete all
+    speakers" did not remove these rows itself.
+    """
+    with engine.begin() as conn:
+        snippets = conn.execute(text(
+            'DELETE FROM speaker_snippet WHERE speaker_id NOT IN (SELECT id FROM speaker) '
+            'OR recording_id NOT IN (SELECT id FROM recording)')).rowcount
+        samples = conn.execute(text(
+            'DELETE FROM speaker_voice_sample '
+            'WHERE speaker_id NOT IN (SELECT id FROM speaker)')).rowcount
+    if snippets or samples:
+        app.logger.info(f"Removed {snippets} orphaned speaker snippet(s) "
+                        f"and {samples} orphaned voice sample(s)")
+
+
 def initialize_database(app):
     """
     Initialize database schema and run migrations.
@@ -171,6 +189,32 @@ def _migration_section(app, failures, name):
             )
 
 
+def unique_upload_idempotency_key(app, engine):
+    """One recording per upload idempotency key (#476).
+
+    The first index was not unique, so overlapping retries could store a key
+    twice: older duplicates lose their key (the newest keeps replaying), then
+    the unique index replaces the old one. NULLs are distinct, so unkeyed
+    recordings never clash.
+    """
+    if 'ux_recording_user_idem' not in {i['name'] for i in inspect(engine).get_indexes('recording')}:
+        with engine.begin() as conn:
+            dupes = conn.execute(text(
+                'SELECT user_id, upload_idempotency_key, MAX(id) FROM recording '
+                'WHERE upload_idempotency_key IS NOT NULL '
+                'GROUP BY user_id, upload_idempotency_key HAVING COUNT(*) > 1')).fetchall()
+            for user_id, key, keep in dupes:
+                conn.execute(text(
+                    'UPDATE recording SET upload_idempotency_key = NULL '
+                    'WHERE user_id = :u AND upload_idempotency_key = :k AND id < :keep'),
+                    {'u': user_id, 'k': key, 'keep': keep})
+        if dupes:
+            app.logger.info(f"Cleared {len(dupes)} duplicated upload idempotency keys")
+        create_index_if_not_exists(engine, 'ux_recording_user_idem', 'recording',
+                                   'user_id, upload_idempotency_key', unique=True)
+    drop_index_if_exists(engine, 'ix_recording_user_idem', 'recording')
+
+
 def _run_migrations(app, engine):
     """Apply every schema migration. Assumes the migration lock is held."""
     failures = []
@@ -193,6 +237,11 @@ def _run_migrations(app, engine):
             app.logger.info("Added extract_events column to user table")
         if add_column_if_not_exists(engine, 'user', 'output_language', 'VARCHAR(50)'):
             app.logger.info("Added output_language column to user table")
+        # Per-user timezone for generated text (#412)
+        if add_column_if_not_exists(engine, 'user', 'timezone', 'VARCHAR(64)'):
+            app.logger.info("Added timezone column to user table")
+        if add_column_if_not_exists(engine, 'user', 'timezone_mode', "VARCHAR(8) DEFAULT 'auto'"):
+            app.logger.info("Added timezone_mode column to user table")
         if add_column_if_not_exists(engine, 'user', 'summary_prompt', 'TEXT'):
             app.logger.info("Added summary_prompt column to user table")
         if add_column_if_not_exists(engine, 'user', 'name', 'VARCHAR(100)'):
@@ -224,10 +273,64 @@ def _run_migrations(app, engine):
     with _migration_section(app, failures, "recording, tag, speaker and processing columns"):
         if add_column_if_not_exists(engine, 'recording', 'mime_type', 'VARCHAR(100)'):
             app.logger.info("Added mime_type column to recording table")
+        # Detected transcription language (#386). Existing rows stay NULL:
+        # the audio would have to be re-transcribed to learn it, and the
+        # webhook simply omits the field when it is not known.
+        if add_column_if_not_exists(engine, 'recording', 'transcription_language', 'VARCHAR(20)'):
+            app.logger.info("Added transcription_language column to recording table")
         if add_column_if_not_exists(engine, 'recording', 'audio_duration_seconds', 'FLOAT'):
             app.logger.info("Added audio_duration_seconds column to recording table")
         if add_column_if_not_exists(engine, 'recording', 'completed_at', 'DATETIME'):
             app.logger.info("Added completed_at column to recording table")
+        # Change tracking for API clients (mailr spec G2). Filled from
+        # completed_at or created_at once; the feed reads NULL as created_at,
+        # so a failed backfill is harmless and the next start retries it.
+        if add_column_if_not_exists(engine, 'recording', 'updated_at', 'DATETIME'):
+            app.logger.info("Added updated_at column to recording table")
+        create_index_if_not_exists(engine, 'ix_recording_updated_at', 'recording', 'updated_at')
+        create_index_if_not_exists(engine, 'ix_recording_user_updated', 'recording', 'user_id, updated_at')
+
+        def _backfill_recording_updated_at(engine):
+            from datetime import datetime as _dt
+            from src.services.recording_changes import FEED_SINCE_KEY, iso_z
+            with engine.begin() as conn:
+                conn.execute(text(
+                    'UPDATE recording SET updated_at = COALESCE(completed_at, created_at) '
+                    'WHERE updated_at IS NULL'))
+            SystemSetting.set_setting(FEED_SINCE_KEY, iso_z(_dt.utcnow()),
+                                      'Start of change tracking (changes feed)')
+
+        run_once(engine, '0002_backfill_recording_updated_at', _backfill_recording_updated_at,
+                 logger=app.logger)
+        # Public share link expiry (mailr spec G10).
+        if add_column_if_not_exists(engine, 'share', 'expires_at', 'DATETIME'):
+            app.logger.info("Added expires_at column to share table")
+        # Speaker contact details (mailr spec G6).
+        if add_column_if_not_exists(engine, 'speaker', 'email', 'VARCHAR(320)'):
+            app.logger.info("Added email column to speaker table")
+        if add_column_if_not_exists(engine, 'speaker', 'aliases', 'TEXT'):
+            app.logger.info("Added aliases column to speaker table")
+        if add_column_if_not_exists(engine, 'speaker', 'updated_at', 'DATETIME'):
+            app.logger.info("Added updated_at column to speaker table")
+        create_index_if_not_exists(engine, 'ix_speaker_user_email', 'speaker', 'user_id, email')
+        # Idempotent API uploads (mailr spec G8).
+        if add_column_if_not_exists(engine, 'recording', 'upload_idempotency_key', 'VARCHAR(100)'):
+            app.logger.info("Added upload_idempotency_key column to recording table")
+        unique_upload_idempotency_key(app, engine)
+        # Chunks are read and deleted by recording, in order (D#441)
+        create_index_if_not_exists(engine, 'ix_transcript_chunk_recording', 'transcript_chunk',
+                                   'recording_id, chunk_index')
+        # The recording lists and the Shared Transcripts list read shares,
+        # tag links and per-user states by these columns (D#483)
+        for index_name, table_name, columns in (
+            ('ix_share_recording_id', 'share', 'recording_id'),
+            ('ix_share_user_id', 'share', 'user_id'),
+            ('ix_internal_share_shared_with_user_id', 'internal_share', 'shared_with_user_id'),
+            ('ix_internal_share_owner_id', 'internal_share', 'owner_id'),
+            ('ix_shared_recording_state_user_id', 'shared_recording_state', 'user_id'),
+            ('ix_recording_tags_tag_id', 'recording_tags', 'tag_id'),
+        ):
+            create_index_if_not_exists(engine, index_name, table_name, columns)
         if add_column_if_not_exists(engine, 'recording', 'processing_time_seconds', 'INTEGER'):
             app.logger.info("Added processing_time_seconds column to recording table")
         if add_column_if_not_exists(engine, 'recording', 'transcription_duration_seconds', 'INTEGER'):
@@ -296,6 +399,8 @@ def _run_migrations(app, engine):
         # Add is_new_upload column to processing_job table for tracking upload vs reprocessing jobs
         if add_column_if_not_exists(engine, 'processing_job', 'is_new_upload', 'BOOLEAN DEFAULT 0'):
             app.logger.info("Added is_new_upload column to processing_job table")
+        if add_column_if_not_exists(engine, 'processing_job', 'provider_task', 'TEXT'):
+            app.logger.info("Added provider_task column to processing_job table")
 
         if add_column_if_not_exists(engine, 'tag', 'group_id', 'INTEGER'):
             app.logger.info("Added group_id column to tag table")
@@ -352,9 +457,29 @@ def _run_migrations(app, engine):
         if add_column_if_not_exists(engine, 'user', 'monthly_transcription_budget', 'INTEGER'):
             app.logger.info("Added monthly_transcription_budget column to user table")
 
+        # Light/dark mode and color scheme saved with the account (D#419);
+        # null until the user changes them
+        if add_column_if_not_exists(engine, 'user', 'theme_dark_mode', 'BOOLEAN'):
+            app.logger.info("Added theme_dark_mode column to user table")
+        if add_column_if_not_exists(engine, 'user', 'theme_color_scheme', 'VARCHAR(16)'):
+            app.logger.info("Added theme_color_scheme column to user table")
+
+        # Raised when the password is set, to end the account's sign-ins (#437)
+        if add_column_if_not_exists(engine, 'user', 'session_version', 'INTEGER'):
+            app.logger.info("Added session_version column to user table")
+
+        # Storage quota in megabytes (#413)
+        if add_column_if_not_exists(engine, 'user', 'storage_quota_mb', 'INTEGER'):
+            app.logger.info("Added storage_quota_mb column to user table")
+
         # Naming templates feature
         if add_column_if_not_exists(engine, 'user', 'default_naming_template_id', 'INTEGER'):
             app.logger.info("Added default_naming_template_id column to user table")
+
+        # Email notification preference (#386). Defaults off, so an upgrade
+        # never starts mailing anyone who did not ask for it.
+        if add_column_if_not_exists(engine, 'user', 'notify_email_on_completion', 'BOOLEAN DEFAULT 0'):
+            app.logger.info("Added notify_email_on_completion column to user table")
 
         # Email verification fields
         email_verified_added = add_column_if_not_exists(engine, 'user', 'email_verified', 'BOOLEAN DEFAULT 0')
@@ -397,6 +522,9 @@ def _run_migrations(app, engine):
         # Per-feature transcript timestamp settings (#304)
         if add_column_if_not_exists(engine, 'user', 'summary_include_timestamps', 'BOOLEAN DEFAULT 0'):
             app.logger.info("Added summary_include_timestamps column to user table")
+        # Notes given to the summarizer (#440), off by default
+        if add_column_if_not_exists(engine, 'user', 'summary_include_notes', 'BOOLEAN DEFAULT 0'):
+            app.logger.info("Added summary_include_notes column to user table")
         if add_column_if_not_exists(engine, 'user', 'summary_timestamp_template_id', 'INTEGER'):
             app.logger.info("Added summary_timestamp_template_id column to user table")
         if add_column_if_not_exists(engine, 'user', 'chat_include_timestamps', 'BOOLEAN DEFAULT 0'):
@@ -429,6 +557,27 @@ def _run_migrations(app, engine):
             app.logger.info("Added default_hotwords column to folder table")
         if add_column_if_not_exists(engine, 'folder', 'default_initial_prompt', 'TEXT'):
             app.logger.info("Added default_initial_prompt column to folder table")
+
+        # Voice matching: embedding space of a recording's embeddings, and the
+        # label -> name map that lets renames reach the voice samples. The
+        # voice_embedding_space and speaker_voice_sample tables come from
+        # create_all().
+        if add_column_if_not_exists(engine, 'recording', 'speaker_embeddings_space_id', 'INTEGER'):
+            app.logger.info("Added speaker_embeddings_space_id column to recording table")
+        if add_column_if_not_exists(engine, 'recording', 'speaker_label_map', 'JSON'):
+            app.logger.info("Added speaker_label_map column to recording table")
+
+        # Archive hides a recording from the main list without deleting
+        # anything. Per user, like inbox and star (#394).
+        if add_column_if_not_exists(engine, 'recording', 'is_archived', 'BOOLEAN DEFAULT 0'):
+            app.logger.info("Added is_archived column to recording table")
+        if add_column_if_not_exists(engine, 'shared_recording_state', 'is_archived', 'BOOLEAN DEFAULT 0'):
+            app.logger.info("Added is_archived column to shared_recording_state table")
+
+        # Configurable AI title instructions at every level (#400)
+        for table in ('user', 'tag', 'folder'):
+            if add_column_if_not_exists(engine, table, 'title_prompt', 'TEXT'):
+                app.logger.info(f"Added title_prompt column to {table} table")
 
     with _migration_section(app, failures, "token indexes, export templates and sharing columns"):
         # Create indexes for token lookups (for faster token verification)
@@ -652,6 +801,47 @@ def _run_migrations(app, engine):
             app.logger.warning(f"Error during meeting_date migration: {e}")
             app.logger.warning("New recordings will work correctly, but existing dates may need manual migration")
 
+    with _migration_section(app, failures, "webhook secret rotation grace"):
+        # mailr spec W6: recipients' webhooks for shared recordings (opt-in).
+        if add_column_if_not_exists(engine, 'webhook', 'include_shared', 'BOOLEAN DEFAULT 0'):
+            app.logger.info("Added include_shared column to webhook table")
+        # mailr spec W2: the previous secret signs a second V2 value for a while.
+        if add_column_if_not_exists(engine, 'webhook', 'previous_secret', 'VARCHAR(120)'):
+            app.logger.info("Added previous_secret column to webhook table")
+        if add_column_if_not_exists(engine, 'webhook', 'previous_secret_expires_at', 'DATETIME'):
+            app.logger.info("Added previous_secret_expires_at column to webhook table")
+
+    with _migration_section(app, failures, "notifications"):
+        # The table itself comes from create_all(); these cover a database
+        # that already had an earlier version of it. Columns are added
+        # individually so a partial table is completed rather than rebuilt.
+        if create_index_if_not_exists(engine, 'ix_notification_user_id', 'notification', 'user_id'):
+            app.logger.info("Added index on notification.user_id")
+        if create_index_if_not_exists(engine, 'ix_notification_dedupe_key', 'notification', 'dedupe_key'):
+            app.logger.info("Added index on notification.dedupe_key")
+        if create_index_if_not_exists(engine, 'ix_notification_resolved_at', 'notification', 'resolved_at'):
+            app.logger.info("Added index on notification.resolved_at")
+
+    with _migration_section(app, failures, "sliced file upload sessions"):
+        # The model declares kind as NOT NULL with index=True, but both of
+        # those only reach a database that create_all() built. An upgraded
+        # database gets the column from the ALTER below, so the index has to
+        # be created explicitly here or existing installations never get one.
+        #
+        # The NOT NULL half is deliberately left alone. ADD COLUMN ... DEFAULT
+        # backfills every existing row, the ORM always supplies a value, and
+        # the default covers a direct insert, so the constraint would buy
+        # nothing that is not already true. Adding it to SQLite would mean
+        # swapping the column, which is real risk for no gain.
+        if add_column_if_not_exists(engine, 'recording_session', 'kind', "VARCHAR(20) DEFAULT 'recorder'"):
+            app.logger.info("Added kind column to recording_session table")
+        if add_column_if_not_exists(engine, 'recording_session', 'upload_filename', 'VARCHAR(255)'):
+            app.logger.info("Added upload_filename column to recording_session table")
+        if add_column_if_not_exists(engine, 'recording_session', 'upload_total_bytes', 'BIGINT'):
+            app.logger.info("Added upload_total_bytes column to recording_session table")
+        if create_index_if_not_exists(engine, 'ix_recording_session_kind', 'recording_session', 'kind'):
+            app.logger.info("Added index on recording_session.kind")
+
     with _migration_section(app, failures, "performance and uniqueness indexes"):
         # Add index on TranscriptChunk.speaker_name for performance
         # This improves speaker rename operations which update all chunks
@@ -686,6 +876,16 @@ def _run_migrations(app, engine):
                 app.logger.info("Created unique index ix_user_sso_subject on user.sso_subject")
         except Exception as e:
             app.logger.warning(f"Could not create unique index on user.sso_subject: {e}")
+
+        # Where a recording's title came from (#412): user-typed titles are
+        # kept on reprocess, generated ones are regenerated.
+        if add_column_if_not_exists(engine, 'recording', 'title_source', 'VARCHAR(16)'):
+            app.logger.info("Added title_source column to recording table")
+
+        # Token scopes (mailr spec G1). NULL = full access, so existing tokens
+        # keep working exactly as before; no backfill.
+        if add_column_if_not_exists(engine, 'api_token', 'scopes', 'TEXT'):
+            app.logger.info("Added scopes column to api_token table")
 
         # Add file_hash column for duplicate detection
         if add_column_if_not_exists(engine, 'recording', 'file_hash', 'VARCHAR(64)'):
@@ -733,6 +933,15 @@ def _run_migrations(app, engine):
             )
             app.logger.info("Initialized default transcript_length_limit setting")
             
+        if not SystemSetting.query.filter_by(key='default_storage_quota_mb').first():
+            SystemSetting.set_setting(
+                key='default_storage_quota_mb',
+                value='0',
+                description='Storage quota in megabytes (MB) given to new accounts. 0 means no limit. Existing accounts keep their own quota, set in Edit User.',
+                setting_type='integer'
+            )
+            app.logger.info("Initialized default default_storage_quota_mb setting")
+
         if not SystemSetting.query.filter_by(key='max_file_size_mb').first():
             SystemSetting.set_setting(
                 key='max_file_size_mb',
@@ -777,6 +986,16 @@ def _run_migrations(app, engine):
                 setting_type='string'
             )
             app.logger.info("Initialized admin_default_summary_prompt setting")
+
+        if not SystemSetting.query.filter_by(key='admin_default_title_prompt').first():
+            from src.config.prompts import DEFAULT_TITLE_PROMPT
+            SystemSetting.set_setting(
+                key='admin_default_title_prompt',
+                value=DEFAULT_TITLE_PROMPT,
+                description='Default instructions for AI-generated recording titles, used when no tag, folder or user title prompt is set.',
+                setting_type='string'
+            )
+            app.logger.info("Initialized admin_default_title_prompt setting")
 
         if not SystemSetting.query.filter_by(key='admin_default_contextual_speaker_prompt').first():
             from src.config.prompts import DEFAULT_CONTEXTUAL_SPEAKER_PROMPT
@@ -850,6 +1069,19 @@ def _run_migrations(app, engine):
                 setting_type='boolean'
             )
             app.logger.info("Initialized enable_folders setting")
+
+        if not SystemSetting.query.filter_by(key='default_timezone').first():
+            # Seeded from the legacy TIMEZONE variable (removed in v0.9.0, still in
+            # some setups, e.g. the Unraid template) so its intent carries over.
+            from src.utils.timezones import is_valid_timezone
+            legacy_tz = (os.environ.get('TIMEZONE') or '').strip()
+            SystemSetting.set_setting(
+                key='default_timezone',
+                value=legacy_tz if is_valid_timezone(legacy_tz) else 'UTC',
+                description='Timezone for dates in generated titles (naming templates, default titles) for users whose browser has not reported one and who have not chosen one in Account settings.',
+                setting_type='string'
+            )
+            app.logger.info("Initialized default_timezone setting")
 
     with _migration_section(app, failures, "embedding identifier tracking"):
         # Track the embedding identifier (provider + model) in system_setting
@@ -978,6 +1210,24 @@ def _run_migrations(app, engine):
         except Exception as e:
             db.session.rollback()
             app.logger.warning(f"transcription_language normalization migration skipped: {e}")
+
+        # Link named transcript segments to saved speakers (speaker_id), once.
+        # Voice samples help where they exist; the name match covers the rest.
+        try:
+            from src.services.speaker_links import backfill_all
+            run_once(engine, '0003_link_transcript_speakers',
+                     lambda eng: backfill_all(eng, logger=app.logger), logger=app.logger)
+        except Exception as e:
+            db.session.rollback()
+            app.logger.warning(f"Transcript speaker linking skipped, retried next start: {e}")
+
+        # "Delete all speakers" used to leave the speakers' snippets behind (#475).
+        try:
+            run_once(engine, '0004_remove_orphaned_speaker_rows',
+                     lambda eng: _remove_orphaned_speaker_rows(eng, app), logger=app.logger)
+        except Exception as e:
+            db.session.rollback()
+            app.logger.warning(f"Orphaned speaker row cleanup skipped, retried next start: {e}")
 
     with _migration_section(app, failures, "inquire mode chunk backfill"):
         # Process existing recordings for inquire mode (chunk and embed them)

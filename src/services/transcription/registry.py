@@ -50,6 +50,7 @@ class ConnectorRegistry:
         from .connectors.alibaba_funasr import AlibabaFunASRConnector
         from .connectors.mossland import MosslandTranscriptionConnector
         from .connectors.assemblyai import AssemblyAITranscriptionConnector
+        from .connectors.tencent_asr import TencentASRConnector
         from .connectors.openasr import OpenASRTranscriptionConnector
 
         self.register('openai_whisper', OpenAIWhisperConnector)
@@ -61,6 +62,7 @@ class ConnectorRegistry:
         self.register('funasr', AlibabaFunASRConnector)
         self.register('mossland', MosslandTranscriptionConnector)
         self.register('assemblyai', AssemblyAITranscriptionConnector)
+        self.register('tencent_asr', TencentASRConnector)
         self.register('openasr', OpenASRTranscriptionConnector)
 
     def register(self, name: str, connector_class: Type[BaseTranscriptionConnector]):
@@ -352,6 +354,18 @@ class ConnectorRegistry:
                 'model': os.environ.get('TRANSCRIPTION_MODEL', 'moss-transcribe-diarize'),
             }
 
+        elif connector_name == 'tencent_asr':
+            return {
+                'secret_id': os.environ.get('TENCENT_SECRET_ID', ''),
+                'secret_key': os.environ.get('TENCENT_SECRET_KEY', ''),
+                'model': os.environ.get('TENCENT_ASR_MODEL', '16k_zh_en_meeting'),
+                'timeout': os.environ.get('TENCENT_ASR_TIMEOUT', '1800'),
+                'poll_interval': os.environ.get('TENCENT_ASR_POLL_INTERVAL', '5'),
+                'hotword_id': os.environ.get('TENCENT_ASR_HOTWORD_ID', ''),
+                'staging_prefix': os.environ.get('TENCENT_ASR_STAGING_PREFIX', 'tencent-asr'),
+                'diarize': os.environ.get('ASR_DIARIZE', 'true').lower() == 'true',
+            }
+
         elif connector_name == 'assemblyai':
             # AssemblyAI's endpoint is fixed (api.assemblyai.com), so we do NOT
             # read the shared TRANSCRIPTION_BASE_URL here: a stale value left
@@ -384,6 +398,9 @@ class ConnectorRegistry:
                 'model': model,
                 'diarize': diarize,
                 'timeout': timeout,
+                # Same flag as the WhisperX connector: OpenASR >= openasr#379
+                # returns per-speaker embeddings on request (#380).
+                'return_speaker_embeddings': (os.environ.get('ASR_RETURN_SPEAKER_EMBEDDINGS') or 'false').lower() == 'true',
             }
 
         else:  # openai_whisper (default)

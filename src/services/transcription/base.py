@@ -6,7 +6,7 @@ import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional, List, Dict, Any, BinaryIO, Set, Type, FrozenSet
+from typing import Optional, List, Dict, Any, BinaryIO, Callable, Set, Type, FrozenSet
 
 
 class TranscriptionCapability(Enum):
@@ -51,6 +51,8 @@ class ConnectorSpecifications:
     # Codecs this connector doesn't support (removed from defaults)
     # Merged with AUDIO_UNSUPPORTED_CODECS env var
     unsupported_codecs: Optional[FrozenSet[str]] = None
+    # Provider accepts original audio; do not transcode or repair its container.
+    preserve_original_audio: bool = False
 
 
 # Default specifications for connectors that don't define their own
@@ -85,6 +87,14 @@ class TranscriptionRequest:
 
     # Provider-specific options (passthrough)
     extra_options: Dict[str, Any] = field(default_factory=dict)
+
+    # Saved provider task, for connectors with SUPPORTS_TASK_RESUME. A
+    # connector calls save_provider_task(task) as soon as the service accepts
+    # a job (and with None to forget it); a retry of the same processing job
+    # receives that task back in provider_task and polls it instead of
+    # submitting the audio again. Both are None outside a processing job.
+    provider_task: Optional[Dict[str, Any]] = None
+    save_provider_task: Optional[Callable[[Optional[Dict[str, Any]]], None]] = None
 
 
 @dataclass
@@ -164,6 +174,10 @@ class BaseTranscriptionConnector(ABC):
 
     # Provider-specific constraints - subclasses should override
     SPECIFICATIONS: ConnectorSpecifications = DEFAULT_SPECIFICATIONS
+
+    # Submit-and-poll services that charge per job set this and use
+    # TranscriptionRequest.provider_task / save_provider_task.
+    SUPPORTS_TASK_RESUME: bool = False
 
     def __init__(self, config: Dict[str, Any]):
         """

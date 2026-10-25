@@ -25,6 +25,13 @@ except (TypeError, ValueError):
     FFMPEG_TIMEOUT_SECONDS = 3600
 
 
+# What a client is told when FFmpeg cannot decode its upload (#482). The
+# exception text stays in the log: FFmpeg's output names its build and the
+# path of the file.
+AUDIO_DECODE_FAILED_MESSAGE = ('The uploaded file could not be read as audio. '
+                               'It may be corrupt or in an unsupported format.')
+
+
 class FFmpegError(Exception):
     """Custom exception for FFmpeg-related errors."""
     pass
@@ -33,6 +40,34 @@ class FFmpegError(Exception):
 class FFmpegNotFoundError(FFmpegError):
     """Raised when FFmpeg executable is not found."""
     pass
+
+
+class FFmpegTimeoutError(FFmpegError):
+    """Raised when an FFmpeg command runs past FFMPEG_TIMEOUT_SECONDS.
+
+    A timeout says nothing about the input, so callers that answer a client
+    can tell it apart from a file FFmpeg could not decode.
+    """
+    pass
+
+
+def describe_size_reduction(reduction_percent: float) -> str:
+    """Label a size change for a log line: "40.2% smaller", "93.5% larger".
+
+    The old "(-93.5% reduction)" was arithmetically right and read as a
+    win for a file that had doubled.
+    """
+    if reduction_percent > 0.05:
+        return f"{reduction_percent:.1f}% smaller"
+    if reduction_percent < -0.05:
+        return f"{-reduction_percent:.1f}% larger"
+    return "same size"
+
+
+def describe_size_change(original_size: int, final_size: int) -> str:
+    """describe_size_reduction for two byte counts."""
+    pct = ((original_size - final_size) / original_size * 100) if original_size > 0 else 0.0
+    return describe_size_reduction(pct)
 
 
 def convert_to_mp3(
@@ -333,12 +368,11 @@ def compress_audio(
         
         # Get compressed file size
         compressed_size = os.path.getsize(temp_output_path)
-        ratio = (1 - compressed_size / original_size) * 100 if original_size > 0 else 0
-        
+
         current_app.logger.info(
             f"Compressed {os.path.basename(input_path)}: "
             f"{original_size / 1024 / 1024:.1f}MB -> "
-            f"{compressed_size / 1024 / 1024:.1f}MB ({ratio:.1f}% reduction)"
+            f"{compressed_size / 1024 / 1024:.1f}MB ({describe_size_change(original_size, compressed_size)})"
         )
         
         # Remove original and rename temp to final
@@ -544,7 +578,7 @@ def _run_ffmpeg_command(cmd: list, operation_description: str) -> None:
         # hanging forever on a stalled/adversarial input.
         error_msg = f"{operation_description} timed out after {FFMPEG_TIMEOUT_SECONDS}s"
         current_app.logger.error(f"FFmpeg error: {error_msg}")
-        raise FFmpegError(error_msg)
+        raise FFmpegTimeoutError(error_msg)
 
     except subprocess.CalledProcessError as e:
         error_msg = f"{operation_description} failed: {decode_ffmpeg_output(e.stderr)}"

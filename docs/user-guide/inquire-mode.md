@@ -32,6 +32,8 @@ The left sidebar contains filters that help you narrow your search to specific r
 
 The tag filter lets you select recordings with specific tags, which is perfect when you want to search within a particular project, client, or type of meeting. If you've tagged your recordings consistently, this becomes a powerful way to segment your searches. The system shows how many recordings match each tag, helping you understand the scope of your search.
 
+The folder filter, shown when folders are enabled, limits the search to recordings in the selected folders. When tags and folders are both selected, only recordings that are in one of the selected folders and carry one of the selected tags are searched.
+
 Speaker filtering allows you to focus on what specific people have said across recordings. This is invaluable when you need to track commitments from a particular person, understand someone's perspective on various topics, or prepare for a meeting with specific individuals.
 
 Date range filtering helps you focus on recent discussions or search within a specific time period. This is particularly useful for tracking how discussions have evolved over time or finding information from a specific quarter or project phase.
@@ -81,6 +83,10 @@ The system processes recordings in chunks, allowing it to search through even ve
 A note on changing embedding models: vectors from different models are not comparable, even when their dimensions happen to match. After switching `EMBEDDING_MODEL` or `EMBEDDING_BASE_URL` to a different model, re-embed the library (the admin dashboard's reprocessing tools, or reindex recordings individually) so search quality does not silently degrade.
 
 Performance scales well with proper setup. The initial indexing of recordings happens automatically after transcription, and subsequent searches leverage this pre-computed index. Response times typically range from a few seconds for focused searches to slightly longer for complex queries across large libraries.
+
+## Searching from Other Tools
+
+Semantic search is also available through the API: `GET /api/v1/search?mode=semantic` (see the [API Reference](api-reference.md#search)). The same request without `mode=semantic` runs a keyword search over every recording, which works without Inquire mode.
 
 ## Agentic Inquire (Beta)
 

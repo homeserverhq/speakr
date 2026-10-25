@@ -2,11 +2,10 @@
 <html lang="en" class="h-full">
 <head>
     <meta charset="UTF-8">
+    {% include 'includes/theme_account.html' %}
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
     <title>Shared Recording - {{ recording.title }}</title>
-        <!-- All dependencies bundled locally for offline support -->
-<script src="{{ url_for('static', filename='vendor/js/tailwind.min.js') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
         <!-- All dependencies bundled locally for offline support -->
 <script src="{{ url_for('static', filename='vendor/js/vue.global.js') }}"></script>
@@ -19,23 +18,6 @@
     {% include 'includes/loading_overlay.html' %}
 
     <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    maxHeight: {
-                        '85vh': '85vh',
-                        '90vh': '90vh'
-                    },
-                    colors: {
-                        primary: 'var(--bg-primary)',
-                        secondary: 'var(--bg-secondary)',
-                        accent: 'var(--bg-accent)'
-                    }
-                }
-            }
-        }
-
         // Function to apply the theme based on localStorage and system preference
         function applyTheme() {
             // Guard against early execution
@@ -75,6 +57,10 @@
             applyTheme();
         }
     </script>
+    <!-- Tailwind utilities, compiled at build time (scripts/build_css.sh). Last in
+         <head> so that, as with the former runtime build, they follow the page's
+         own stylesheets in the cascade. -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}">
 </head>
 <body class="h-full bg-[var(--bg-primary)] text-[var(--text-primary)] transition-colors duration-300">
     <div id="app" class="h-full flex flex-col" data-recording='{{ recording|tojson|safe }}'>
@@ -105,7 +91,7 @@
                     <div v-if="recording.audio_deleted_at"
                          class="bg-[var(--bg-tertiary)] border border-[var(--border-primary)] text-[var(--text-muted)] px-4 py-3 rounded-lg flex items-center gap-2 text-sm">
                         <i class="fas fa-info-circle"></i>
-                        <span>Audio file has been archived and is no longer available for playback.</span>
+                        <span>The audio file was removed. The transcript and summary remain available.</span>
                     </div>
                     <!-- Custom Audio/Video Player -->
                     <div v-else>
@@ -310,7 +296,7 @@
                             </div>
                             {% else %}
                             <!-- Plain Text View (for non-JSON transcriptions) -->
-                            <div class="whitespace-pre-wrap cursor-pointer hover:bg-[var(--bg-accent-hover)] p-2 rounded transition-colors">{{ transcript.plain_text }}</div>
+                            <div class="whitespace-pre-wrap bidi-auto cursor-pointer hover:bg-[var(--bg-accent-hover)] p-2 rounded transition-colors">{{ transcript.plain_text }}</div>
                             {% endif %}
                         </div>
                         {% else %}
@@ -374,7 +360,7 @@
                             </div>
 
                             <!-- Plain Text View (for non-JSON transcriptions) -->
-                            <div v-if="!processedTranscription.isJson" class="whitespace-pre-wrap cursor-pointer hover:bg-[var(--bg-accent-hover)] p-2 rounded transition-colors">
+                            <div v-if="!processedTranscription.isJson" class="whitespace-pre-wrap bidi-auto cursor-pointer hover:bg-[var(--bg-accent-hover)] p-2 rounded transition-colors">
                                 ${processedTranscription.content}
                             </div>
                         </div>
@@ -819,6 +805,7 @@
                     }
 
                     localStorage.setItem('darkMode', newDarkMode.toString());
+                    if (window.speakrSaveTheme) window.speakrSaveTheme('darkMode');
                 }
 
                 function showToast(message) {

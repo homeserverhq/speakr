@@ -80,7 +80,7 @@ def _setup_user(prefix, can_share_publicly=True):
     context closes)."""
     suffix = uuid.uuid4().hex[:8]
     user = User(
-        username=f"{prefix}_{suffix}",
+        username=f"{prefix[:11]}_{suffix}",
         email=f"{prefix}_{suffix}@local.test",
         password="x",
         can_share_publicly=can_share_publicly,
@@ -465,6 +465,28 @@ def test_users_search_403_when_internal_sharing_disabled():
         resp = _client_for(user).get("/api/users/search?q=ab")
     assert resp.status_code == 403, resp.data
     _cleanup_ids([user], [])
+
+
+def test_users_search_matches_underscore_literally():
+    """#485: with usernames shown, '_' and '%' in the query are literal."""
+    tok = uuid.uuid4().hex[:8]
+    with _db():
+        searcher = _setup_user("srch_lit")
+        ids = []
+        for name in (f"{tok}_a_b", f"{tok}_aXb", f"{tok}_50%", f"{tok}_500"):
+            u = User(username=name, email=f"{name.replace('%', 'p')}@local.test", password="x")
+            db.session.add(u)
+            db.session.commit()
+            ids.append(u.id)
+    try:
+        with _internal_enabled(), _flag("SHOW_USERNAMES_IN_UI", True, shares_module):
+            client = _client_for(searcher)
+            names = lambda q: {u["username"] for u in
+                               client.get("/api/users/search", query_string={"q": q}).get_json()}
+            assert names(f"{tok}_a_b") == {f"{tok}_a_b"}
+            assert names(f"{tok}_50%") == {f"{tok}_50%"}
+    finally:
+        _cleanup_ids([searcher, *ids], [])
 
 
 def test_can_share_publicly_requires_login():

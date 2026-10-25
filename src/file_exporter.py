@@ -187,10 +187,9 @@ def render_export_filename(recording, user):
     if not template:
         template = DEFAULT_EXPORT_FILENAME_TEMPLATE
 
-    from src.utils.dates import to_local
-    # meeting_date is a user-supplied local calendar date; created_at is stored
-    # as naive UTC, so localize it for user-facing filename output.
-    dt = recording.meeting_date or to_local(recording.created_at)
+    # Dates in export filenames are the owner's local time (#412).
+    from src.utils.timezones import to_user_local
+    dt = to_user_local(recording.meeting_date or recording.created_at, user)
     filename_stem = os.path.splitext(recording.original_filename)[0] if recording.original_filename else ''
 
     variables = {
@@ -442,25 +441,14 @@ def format_duration(seconds):
         return f"{secs}s"
 
 
-def format_file_size(bytes_size):
-    """Format file size in bytes to human-readable string."""
-    if not bytes_size:
-        return ""
-
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if bytes_size < 1024:
-            return f"{bytes_size:.1f} {unit}"
-        bytes_size /= 1024
-    return f"{bytes_size:.1f} TB"
-
-
 def get_user_export_template(user, recording=None):
     """
     Get the export template to use for a recording.
 
-    Resolution order:
-    1. Folder's export_template_id (if recording is in a folder)
-    2. Tag's export_template_id (first matching tag with an export template)
+    Resolution order (#412: same order as every other per-recording setting,
+    tag before folder; before #412 the folder came first):
+    1. Tag's export_template_id (first matching tag with an export template)
+    2. Folder's export_template_id (if recording is in a folder)
     3. User's default export template (is_default=True)
 
     Args:
@@ -473,19 +461,19 @@ def get_user_export_template(user, recording=None):
     from src.models import ExportTemplate
     from src.database import db
 
-    # 1. Check folder's export template
-    if recording and recording.folder and recording.folder.export_template_id:
-        template = db.session.get(ExportTemplate, recording.folder.export_template_id)
-        if template:
-            return template
-
-    # 2. Check tags' export templates
+    # 1. Check tags' export templates
     if recording and recording.tags:
         for tag in recording.tags:
             if tag.export_template_id:
                 template = db.session.get(ExportTemplate, tag.export_template_id)
                 if template:
                     return template
+
+    # 2. Check folder's export template
+    if recording and recording.folder and recording.folder.export_template_id:
+        template = db.session.get(ExportTemplate, recording.folder.export_template_id)
+        if template:
+            return template
 
     # 3. Fall back to user's default
     return ExportTemplate.query.filter_by(
@@ -588,16 +576,20 @@ def generate_from_template(recording, user, template_str, labels, user_language,
     Returns:
         Rendered markdown string
     """
-    from src.utils.localization import format_date_localized
+    from src.utils.localization import format_date_localized, format_file_size
     from src.utils.dates import format_local_iso
+    # Dates in exported text are the owner's local time (#412).
+    from src.utils.timezones import to_user_local
+    def _local(dt):
+        return to_user_local(dt, recording.owner)
 
     # Build context with all available variables
     context = {
         'title': recording.title or f"Recording {recording.id}",
-        'meeting_date': format_date_localized(recording.meeting_date, user_language) if recording.meeting_date else '',
-        'created_at': format_local_iso(recording.created_at),
+        'meeting_date': format_date_localized(_local(recording.meeting_date), user_language) if recording.meeting_date else '',
+        'created_at': format_local_iso(recording.created_at, recording.owner),
         'original_filename': recording.original_filename or '',
-        'file_size': format_file_size(recording.file_size) if recording.file_size else '',
+        'file_size': format_file_size(recording.file_size, user_language) if recording.file_size else '',
         'participants': recording.participants or '',
         'tags': ', '.join([tag.name for tag in recording.tags]) if recording.tags else '',
         'transcription_duration': format_duration(recording.transcription_duration_seconds) if recording.transcription_duration_seconds else '',
@@ -637,8 +629,12 @@ def generate_default_markdown(recording, user, labels, user_language,
     Returns:
         Rendered markdown string
     """
-    from src.utils.localization import format_date_localized
+    from src.utils.localization import format_date_localized, format_file_size
     from src.utils.dates import format_local_iso
+    # Dates in exported text are the owner's local time (#412).
+    from src.utils.timezones import to_user_local
+    def _local(dt):
+        return to_user_local(dt, recording.owner)
 
     lines = []
 
@@ -652,18 +648,18 @@ def generate_default_markdown(recording, user, labels, user_language,
     lines.append("")
 
     if recording.meeting_date:
-        date_str = format_date_localized(recording.meeting_date, user_language)
+        date_str = format_date_localized(_local(recording.meeting_date), user_language)
         lines.append(f"- **{labels.get('date', 'Date')}:** {date_str}")
 
     if recording.created_at:
-        created_str = format_local_iso(recording.created_at)
+        created_str = format_local_iso(recording.created_at, recording.owner)
         lines.append(f"- **{labels.get('created', 'Created')}:** {created_str}")
 
     if recording.original_filename:
         lines.append(f"- **{labels.get('originalFile', 'Original File')}:** {recording.original_filename}")
 
     if recording.file_size:
-        lines.append(f"- **{labels.get('fileSize', 'File Size')}:** {format_file_size(recording.file_size)}")
+        lines.append(f"- **{labels.get('fileSize', 'File Size')}:** {format_file_size(recording.file_size, user_language)}")
 
     if recording.participants:
         lines.append(f"- **{labels.get('participants', 'Participants')}:** {recording.participants}")

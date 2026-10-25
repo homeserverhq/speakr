@@ -7,6 +7,7 @@ import re
 import json
 import time
 import random
+from urllib.parse import urlsplit
 import numpy as np
 from flask import current_app
 from sqlalchemy.orm import joinedload
@@ -31,6 +32,7 @@ if cosine_similarity is None:
 
 from src.database import db
 from src.models import Recording, TranscriptChunk, InternalShare, RecordingTag
+from src.utils.search import LIKE_ESCAPE, contains_pattern
 
 ENABLE_INTERNAL_SHARING = os.environ.get('ENABLE_INTERNAL_SHARING', 'false').lower() == 'true'
 
@@ -53,6 +55,8 @@ except (TypeError, ValueError):
 # When EMBEDDING_BASE_URL is set, embeddings are produced via an OpenAI-
 # compatible /v1/embeddings call rather than locally.
 USE_API_EMBEDDINGS = bool(EMBEDDING_BASE_URL)
+# Match the official host, never a substring in a path or lookalike domain.
+_USE_VOYAGE_API = urlsplit(EMBEDDING_BASE_URL).hostname == "api.voyageai.com"
 
 # Identifier persisted to system_setting so the dimensionality compatibility
 # check covers both "model changed" and "provider changed" scenarios.
@@ -156,7 +160,7 @@ def _is_dimensions_rejection(exc):
     return 'dimension' in str(exc).lower()
 
 
-def _api_embed(texts, user_id=None):
+def _api_embed(texts, user_id=None, input_type="document"):
     """Call the OpenAI-compatible embeddings endpoint and return numpy vectors.
 
     Retries on transient errors (rate limits, timeouts, 5xx, connection
@@ -187,7 +191,7 @@ def _api_embed(texts, user_id=None):
     if len(texts) > batch_size:
         out = []
         for i in range(0, len(texts), batch_size):
-            part = _api_embed(texts[i:i + batch_size], user_id=user_id)
+            part = _api_embed(texts[i:i + batch_size], user_id=user_id, input_type=input_type)
             if len(part) != len(texts[i:i + batch_size]):
                 return []
             out.extend(part)
@@ -202,12 +206,19 @@ def _api_embed(texts, user_id=None):
             "Embedding API in failure cooldown; skipping call and using fallback")
         return []
 
-    # encoding_format='float' explicitly: OpenAI SDK v2 defaults to base64,
-    # which some OpenAI-compatible providers cannot produce; float is the
-    # format every compatible provider accepts.
-    kwargs = {'input': texts, 'model': EMBEDDING_MODEL, 'encoding_format': 'float'}
-    if EMBEDDING_DIMENSIONS is not None and not _dimensions_rejected:
-        kwargs['dimensions'] = EMBEDDING_DIMENSIONS
+    if _USE_VOYAGE_API:
+        # Voyage accepts null/base64, not OpenAI's "float". Explicit null
+        # requests JSON floats and prevents the SDK's implicit base64 path.
+        extra_body = {'input_type': input_type}
+        if EMBEDDING_DIMENSIONS is not None:
+            extra_body['output_dimension'] = EMBEDDING_DIMENSIONS
+        kwargs = {'input': texts, 'model': EMBEDDING_MODEL,
+                  'encoding_format': None, 'extra_body': extra_body}
+    else:
+        # Explicit floats also work with providers that cannot emit base64.
+        kwargs = {'input': texts, 'model': EMBEDDING_MODEL, 'encoding_format': 'float'}
+        if EMBEDDING_DIMENSIONS is not None and not _dimensions_rejected:
+            kwargs['dimensions'] = EMBEDDING_DIMENSIONS
 
     last_exc = None
     for attempt in range(1, _API_EMBED_MAX_ATTEMPTS + 1):
@@ -637,10 +648,15 @@ def basic_text_search_chunks(user_id, query, filters=None, top_k=5):
                     RecordingTag, Recording.id == RecordingTag.recording_id
                 ).filter(RecordingTag.tag_id.in_(filters['tag_ids']))
 
+            if filters.get('folder_ids'):
+                # A subquery, so that no second join to Recording is needed (#428)
+                chunks_query = chunks_query.filter(TranscriptChunk.recording_id.in_(
+                    db.session.query(Recording.id).filter(Recording.folder_id.in_(filters['folder_ids']))))
+
             if filters.get('speaker_names'):
                 # Filter by the participants field on the recording.
                 speaker_conditions = [
-                    Recording.participants.ilike(f'%{speaker_name}%')
+                    Recording.participants.ilike(contains_pattern(speaker_name), escape=LIKE_ESCAPE)
                     for speaker_name in filters['speaker_names']
                 ]
                 chunks_query = chunks_query.filter(db.or_(*speaker_conditions))
@@ -651,10 +667,16 @@ def basic_text_search_chunks(user_id, query, filters=None, top_k=5):
                     TranscriptChunk.recording_id.in_(filters['recording_ids'])
                 )
 
-            if filters.get('date_from'):
-                chunks_query = chunks_query.filter(Recording.meeting_date >= filters['date_from'])
-            if filters.get('date_to'):
-                chunks_query = chunks_query.filter(Recording.meeting_date <= filters['date_to'])
+            if filters.get('date_from') or filters.get('date_to'):
+                # Local calendar days of the user, as UTC bounds; date_to is
+                # inclusive (it used to drop the last day, #412).
+                from src.utils.timezones import local_date_bounds, user_timezone_by_id
+                _start, _end = local_date_bounds(filters.get('date_from'), filters.get('date_to'),
+                                                 user_timezone_by_id(user_id))
+                if _start is not None:
+                    chunks_query = chunks_query.filter(Recording.meeting_date >= _start)
+                if _end is not None:
+                    chunks_query = chunks_query.filter(Recording.meeting_date < _end)
 
         # Text search - filter stop words and rank by match count
         stop_words = {'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been',
@@ -680,7 +702,7 @@ def basic_text_search_chunks(user_id, query, filters=None, top_k=5):
             # Filter: match ANY keyword (OR) to get candidates
             text_conditions = []
             for word in query_words:
-                text_conditions.append(TranscriptChunk.content.ilike(f'%{word}%'))
+                text_conditions.append(TranscriptChunk.content.ilike(contains_pattern(word), escape=LIKE_ESCAPE))
             chunks_query = chunks_query.filter(or_(*text_conditions))
 
             # Rank IN SQL before limiting. The previous code applied
@@ -691,13 +713,13 @@ def basic_text_search_chunks(user_id, query, filters=None, top_k=5):
             # full phrase counting double so exact-phrase hits always
             # outrank scattered single-word matches.
             score_expr = sum(
-                case((TranscriptChunk.content.ilike(f'%{word}%'), 1), else_=0)
+                case((TranscriptChunk.content.ilike(contains_pattern(word), escape=LIKE_ESCAPE), 1), else_=0)
                 for word in query_words
             )
             phrase = query.lower().strip()
             if len(query_words) > 1 and len(phrase) >= 5:
                 score_expr = score_expr + case(
-                    (TranscriptChunk.content.ilike(f'%{phrase}%'), len(query_words)),
+                    (TranscriptChunk.content.ilike(contains_pattern(phrase), escape=LIKE_ESCAPE), len(query_words)),
                     else_=0,
                 )
             chunks = (chunks_query
@@ -765,7 +787,7 @@ def semantic_search_chunks(user_id, query, filters=None, top_k=5):
         # the API call to the searching user so embedding cost tracking shows
         # who issued the query.
         if USE_API_EMBEDDINGS:
-            api_vectors = _api_embed([query], user_id=user_id)
+            api_vectors = _api_embed([query], user_id=user_id, input_type="query")
             if not api_vectors:
                 return basic_text_search_chunks(user_id, query, filters, top_k)
             query_embedding = api_vectors[0]
@@ -799,10 +821,15 @@ def semantic_search_chunks(user_id, query, filters=None, top_k=5):
                     RecordingTag, Recording.id == RecordingTag.recording_id
                 ).filter(RecordingTag.tag_id.in_(filters['tag_ids']))
 
+            if filters.get('folder_ids'):
+                # A subquery, so that no second join to Recording is needed (#428)
+                chunks_query = chunks_query.filter(TranscriptChunk.recording_id.in_(
+                    db.session.query(Recording.id).filter(Recording.folder_id.in_(filters['folder_ids']))))
+
             if filters.get('speaker_names'):
                 # Filter by the participants field on the recording.
                 speaker_conditions = [
-                    Recording.participants.ilike(f'%{speaker_name}%')
+                    Recording.participants.ilike(contains_pattern(speaker_name), escape=LIKE_ESCAPE)
                     for speaker_name in filters['speaker_names']
                 ]
                 chunks_query = chunks_query.filter(db.or_(*speaker_conditions))
@@ -813,10 +840,16 @@ def semantic_search_chunks(user_id, query, filters=None, top_k=5):
                     TranscriptChunk.recording_id.in_(filters['recording_ids'])
                 )
 
-            if filters.get('date_from'):
-                chunks_query = chunks_query.filter(Recording.meeting_date >= filters['date_from'])
-            if filters.get('date_to'):
-                chunks_query = chunks_query.filter(Recording.meeting_date <= filters['date_to'])
+            if filters.get('date_from') or filters.get('date_to'):
+                # Local calendar days of the user, as UTC bounds; date_to is
+                # inclusive (it used to drop the last day, #412).
+                from src.utils.timezones import local_date_bounds, user_timezone_by_id
+                _start, _end = local_date_bounds(filters.get('date_from'), filters.get('date_to'),
+                                                 user_timezone_by_id(user_id))
+                if _start is not None:
+                    chunks_query = chunks_query.filter(Recording.meeting_date >= _start)
+                if _end is not None:
+                    chunks_query = chunks_query.filter(Recording.meeting_date < _end)
 
         # Get chunks that have embeddings
         chunks = chunks_query.filter(TranscriptChunk.embedding.isnot(None)).all()
@@ -886,4 +919,20 @@ def semantic_search_chunks(user_id, query, filters=None, top_k=5):
 # --- Helper Functions for Document Processing ---
 
 
+def embeddings_are_local():
+    """True when embeddings are computed on machines the administrator runs:
+    the built-in local model, or an endpoint on a loopback or private address
+    or a .local/.lan/.internal host. Used to show "local" in place of $0."""
+    if not USE_API_EMBEDDINGS:
+        return True
+    import ipaddress
+    from urllib.parse import urlparse
+    host = (urlparse(EMBEDDING_BASE_URL).hostname or '').lower()
+    if host in ('localhost',) or host.endswith(('.local', '.lan', '.internal', '.localhost')):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        return False
 

@@ -15,6 +15,7 @@ from src.database import db
 from src.models import *
 from src.utils import *
 from src.config.version import get_version
+from src.utils.localization import format_file_size
 from src.services.llm import TEXT_MODEL_BASE_URL, TEXT_MODEL_NAME
 from src.config.app_config import ASR_BASE_URL, USE_NEW_TRANSCRIPTION_ARCHITECTURE, TRANSCRIPTION_MODEL_OPTIONS
 from src.services.token_tracking import token_tracker
@@ -58,6 +59,10 @@ def init_system_helpers(**kwargs):
 
 
 
+# Color scheme ids, as in colorSchemes in static/js/app.modular.js.
+THEME_COLOR_SCHEMES = ('blue', 'emerald', 'purple', 'rose', 'amber', 'teal')
+
+
 # --- Routes ---
 
 @system_bp.route('/api/user/preferences', methods=['POST'])
@@ -76,7 +81,17 @@ def save_user_preferences():
         if mode not in ('range', 'single'):
             return jsonify({'error': 'Invalid speaker_count_mode'}), 400
         current_user.speaker_count_mode = mode
-    
+
+    # Theme, saved when the user changes it so other devices follow (D#419).
+    if 'dark_mode' in data:
+        if not isinstance(data['dark_mode'], bool):
+            return jsonify({'error': 'Invalid dark_mode'}), 400
+        current_user.theme_dark_mode = data['dark_mode']
+    if 'color_scheme' in data:
+        if data['color_scheme'] not in THEME_COLOR_SCHEMES:
+            return jsonify({'error': 'Invalid color_scheme'}), 400
+        current_user.theme_color_scheme = data['color_scheme']
+
     db.session.commit()
     
     return jsonify({
@@ -86,12 +101,31 @@ def save_user_preferences():
     })
 
 
+def _storage_meter(user):
+    """Storage against the quota; has_quota is False without one. The labels
+    are in the interface language's number format (#481)."""
+    try:
+        from src.services.storage_quota import usage
+        u = usage(user)
+    except Exception as e:
+        current_app.logger.warning(f"Could not read storage usage for user {user.id}: {e}")
+        return {'has_quota': False}
+
+    if not u['quota_bytes']:
+        return {'has_quota': False, 'used_bytes': u['used_bytes']}
+    return {'has_quota': True, 'used_bytes': u['used_bytes'], 'quota_bytes': u['quota_bytes'],
+            'percentage': u['percentage'], 'used_label': format_file_size(u['used_bytes']),
+            'quota_label': format_file_size(u['quota_bytes'])}
+
+
 @system_bp.route('/api/user/token-budget', methods=['GET'])
 @login_required
 def get_user_token_budget():
-    """Get current user's token budget status."""
+    """Get current user's token budget status, and storage against the
+    quota for the header meters (#413)."""
     try:
         user = current_user
+        storage = _storage_meter(user)
 
         # If user has no budget, return null to indicate unlimited
         if not user.monthly_token_budget:
@@ -99,7 +133,8 @@ def get_user_token_budget():
                 'has_budget': False,
                 'budget': None,
                 'usage': 0,
-                'percentage': 0
+                'percentage': 0,
+                'storage': storage,
             })
 
         # Get current usage
@@ -110,7 +145,8 @@ def get_user_token_budget():
             'has_budget': True,
             'budget': user.monthly_token_budget,
             'usage': current_usage,
-            'percentage': round(percentage, 1)
+            'percentage': round(percentage, 1),
+            'storage': storage,
         })
     except Exception as e:
         current_app.logger.error(f"Error getting token budget for user {current_user.id}: {e}")
@@ -243,8 +279,9 @@ def get_config():
         except:
             pass  # If not authenticated, use default
 
-        # Calculate if archive toggle should be shown (only when audio-only deletion mode is active)
-        enable_archive_toggle = ENABLE_AUTO_DELETION and DELETION_MODE == 'audio_only'
+        # The "Audio removed" filter matters when retention removes audio, or
+        # when the user can remove audio by hand (same right as deleting).
+        enable_audio_removed_filter = (ENABLE_AUTO_DELETION and DELETION_MODE == 'audio_only') or can_delete
 
         # Get connector capabilities (new architecture)
         # Defaults to USE_ASR_ENDPOINT for backwards compatibility
@@ -302,7 +339,7 @@ def get_config():
             'connector_supports_hotwords': connector_supports_hotwords,
             'connector_supports_initial_prompt': connector_supports_initial_prompt,
             'enable_internal_sharing': ENABLE_INTERNAL_SHARING,
-            'enable_archive_toggle': enable_archive_toggle,
+            'enable_audio_removed_filter': enable_audio_removed_filter,
             'show_usernames_in_ui': SHOW_USERNAMES_IN_UI,
             'can_delete_recordings': can_delete,
             'users_can_delete_enabled': USERS_CAN_DELETE,

@@ -41,7 +41,7 @@ app.config["WTF_CSRF_ENABLED"] = False
 def _make_user(prefix):
     suffix = uuid.uuid4().hex[:8]
     user = User(
-        username=f"{prefix}_{suffix}",
+        username=f"{prefix[:11]}_{suffix}",
         email=f"{prefix}_{suffix}@local.test",
         password="x",
     )
@@ -1194,3 +1194,71 @@ def teardown_module(module):
                 db.session.delete(w)
             db.session.delete(u)
         db.session.commit()
+
+
+def test_completion_payload_carries_the_documented_fields():
+    """`audio_duration_seconds` and `language` were both documented from #275
+    and neither was ever sent: the first read `recording.audio_duration` and
+    the second a per-recording language, and neither is a column, so getattr's
+    default made them None and the None-filter dropped both keys. This pins
+    the attribute names against the model so it cannot regress silently."""
+    from unittest.mock import patch
+    from src.app import app
+    from src.models import Recording
+    from src.services.job_queue import job_queue
+
+    model_columns = {c.name for c in Recording.__table__.columns}
+    for field in ('audio_duration_seconds', 'transcription_duration_seconds',
+                  'summarization_duration_seconds', 'transcription_language'):
+        assert field in model_columns, f'{field} is not a Recording column'
+
+    class _Rec:
+        id = 5150
+        user_id = 7
+        title = 'Q3 planning'
+        transcription_language = 'en'
+        audio_duration_seconds = 3624.7
+        transcription_duration_seconds = 212
+        summarization_duration_seconds = None
+
+    with app.app_context():
+        job_queue.init_app(app)
+        with patch('src.services.webhook_dispatch.emit_webhook_event') as emit, \
+                patch('src.database.db.session.get', return_value=_Rec()):
+            job_queue._emit_completion_webhook('transcribe', 5150)
+
+        assert emit.call_count == 1
+        data = emit.call_args.kwargs['data']
+        assert data['audio_duration_seconds'] == 3624.7
+        assert data['transcription_duration_seconds'] == 212
+        assert data['language'] == 'en'
+        # None-valued keys are still filtered out.
+        assert 'summarization_duration_seconds' not in data
+
+
+def test_language_is_omitted_rather_than_null_when_it_is_unknown():
+    """Absent is normal: backends that report no language, and every recording
+    transcribed before the column existed. Subscribers must not have to
+    distinguish null from missing."""
+    from unittest.mock import patch
+    from src.app import app
+    from src.services.job_queue import job_queue
+
+    class _Rec:
+        id = 5151
+        user_id = 7
+        title = 'Old recording'
+        transcription_language = None
+        audio_duration_seconds = 12.0
+        transcription_duration_seconds = 3
+        summarization_duration_seconds = None
+
+    with app.app_context():
+        job_queue.init_app(app)
+        with patch('src.services.webhook_dispatch.emit_webhook_event') as emit, \
+                patch('src.database.db.session.get', return_value=_Rec()):
+            job_queue._emit_completion_webhook('transcribe', 5151)
+        data = emit.call_args.kwargs['data']
+
+    assert 'language' not in data
+    assert data['audio_duration_seconds'] == 12.0

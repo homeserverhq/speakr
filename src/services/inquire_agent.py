@@ -26,7 +26,8 @@ import time as time_mod
 from datetime import datetime, time as dtime
 
 from src.database import db
-from src.models import Recording, RecordingTag, Tag, User
+from src.models import Folder, Recording, RecordingTag, Tag, User
+from src.utils.search import LIKE_ESCAPE, contains_pattern
 from src.services.embeddings import (
     get_accessible_recording_ids,
     semantic_search_chunks,
@@ -128,15 +129,21 @@ def resolve_allowed_recording_ids(user_id, filters):
     if filters.get('tag_ids'):
         q = q.join(RecordingTag, Recording.id == RecordingTag.recording_id) \
              .filter(RecordingTag.tag_id.in_(filters['tag_ids']))
+    if filters.get('folder_ids'):
+        q = q.filter(Recording.folder_id.in_(filters['folder_ids']))
     if filters.get('speaker_names'):
         q = q.filter(db.or_(*[
-            Recording.participants.ilike(f'%{name}%')
+            Recording.participants.ilike(contains_pattern(name), escape=LIKE_ESCAPE)
             for name in filters['speaker_names']
         ]))
-    if filters.get('date_from'):
-        q = q.filter(Recording.meeting_date >= datetime.combine(filters['date_from'], dtime.min))
-    if filters.get('date_to'):
-        q = q.filter(Recording.meeting_date <= datetime.combine(filters['date_to'], dtime.max))
+    # Local calendar days of the user, as UTC bounds (#412).
+    from src.utils.timezones import local_date_bounds, user_timezone_by_id
+    _start, _end = local_date_bounds(filters.get('date_from'), filters.get('date_to'),
+                                     user_timezone_by_id(user_id))
+    if _start is not None:
+        q = q.filter(Recording.meeting_date >= _start)
+    if _end is not None:
+        q = q.filter(Recording.meeting_date < _end)
 
     return {row[0] for row in q.all()}
 
@@ -157,7 +164,7 @@ def _truncate_to_tokens(text, cap_tokens, pagination_hint=None):
     return text[:cap_chars] + marker
 
 
-def _recording_brief(rec):
+def _recording_brief(rec, zone=None):
     d = {
         'recording_id': rec.id,
         'title': rec.title or 'Untitled Recording',
@@ -166,7 +173,8 @@ def _recording_brief(rec):
         'has_notes': bool(rec.notes),
     }
     if rec.meeting_date:
-        d['meeting_date'] = rec.meeting_date.strftime('%Y-%m-%d %H:%M')
+        from src.utils.timezones import to_local, user_timezone
+        d['meeting_date'] = to_local(rec.meeting_date, zone or user_timezone(rec.owner)).strftime('%Y-%m-%d %H:%M')
     if rec.participants:
         d['participants'] = rec.participants
     if rec.audio_duration_seconds:
@@ -254,6 +262,8 @@ def tool_search_transcripts(ctx, args):
             except ValueError:
                 return {'error': f"{arg} must be an ISO date (YYYY-MM-DD)"}
 
+    from src.utils.timezones import to_local, user_timezone_by_id
+    _zone = user_timezone_by_id(ctx.user_id)
     if mode == 'keyword':
         results = basic_text_search_chunks(ctx.user_id, query, filters, top_k)
         search_type = 'keyword'
@@ -278,7 +288,7 @@ def tool_search_transcripts(ctx, args):
         hits.append({
             'recording_id': chunk.recording_id,
             'title': chunk.recording.title or 'Untitled Recording',
-            'meeting_date': chunk.recording.meeting_date.strftime('%Y-%m-%d') if chunk.recording.meeting_date else None,
+            'meeting_date': to_local(chunk.recording.meeting_date, _zone).strftime('%Y-%m-%d') if chunk.recording.meeting_date else None,
             'speaker': chunk.speaker_name,
             'time': _fmt_time(chunk.start_time),
             'seek_seconds': int(chunk.start_time) if chunk.start_time is not None else None,
@@ -292,17 +302,22 @@ def tool_search_transcripts(ctx, args):
 def tool_list_recordings(ctx, args):
     q = Recording.query.filter(Recording.id.in_(ctx.allowed_ids))
     if args.get('participant'):
-        q = q.filter(Recording.participants.ilike(f"%{args['participant']}%"))
-    for arg, op in (('date_from', 'ge'), ('date_to', 'le')):
+        q = q.filter(Recording.participants.ilike(contains_pattern(args['participant']), escape=LIKE_ESCAPE))
+    from src.utils.timezones import local_date_bounds, user_timezone_by_id
+    _zone = user_timezone_by_id(ctx.user_id)
+    _bounds = {}
+    for arg in ('date_from', 'date_to'):
         if args.get(arg):
             try:
-                parsed = datetime.fromisoformat(str(args[arg]))
+                _bounds[arg] = datetime.fromisoformat(str(args[arg])).date()
             except ValueError:
                 return {'error': f"{arg} must be an ISO date (YYYY-MM-DD)"}
-            if op == 'ge':
-                q = q.filter(Recording.meeting_date >= parsed)
-            else:
-                q = q.filter(Recording.meeting_date <= datetime.combine(parsed.date(), dtime.max))
+    # Local calendar days of the user, as UTC bounds (#412).
+    _start, _end = local_date_bounds(_bounds.get('date_from'), _bounds.get('date_to'), _zone)
+    if _start is not None:
+        q = q.filter(Recording.meeting_date >= _start)
+    if _end is not None:
+        q = q.filter(Recording.meeting_date < _end)
     sort = args.get('sort', 'newest')
     q = q.order_by(Recording.meeting_date.asc() if sort == 'oldest' else Recording.meeting_date.desc())
     limit = min(max(int(args.get('limit', 25) or 25), 1), 100)
@@ -311,7 +326,7 @@ def tool_list_recordings(ctx, args):
     return {
         'total_in_scope': total,
         'returned': len(recs),
-        'recordings': [_recording_brief(r) for r in recs],
+        'recordings': [_recording_brief(r, _zone) for r in recs],
     }
 
 
@@ -388,7 +403,8 @@ def tool_get_recording_metadata(ctx, args):
     rec, err = ctx.check_scope(args.get('recording_id'))
     if err:
         return {'error': err}
-    info = _recording_brief(rec)
+    from src.utils.timezones import user_timezone_by_id
+    info = _recording_brief(rec, user_timezone_by_id(ctx.user_id))
     try:
         info['tags'] = [t.name for t in rec.tags]
     except Exception:
@@ -551,6 +567,13 @@ def _summary_line(tool_counts):
 # Prompts
 # ---------------------------------------------------------------------------
 
+def _today_for(user_ctx):
+    """Today in the user's timezone (#412); UTC when none is known."""
+    from src.utils.timezones import now_local, is_valid_timezone
+    zone = user_ctx.get('timezone')
+    return now_local(zone if is_valid_timezone(zone) else 'UTC').strftime('%Y-%m-%d')
+
+
 def _system_prompt(user_ctx, filters_text, availability, tool_mode_prompt_block):
     language_instruction = (
         f"Respond in {user_ctx['output_language']}. " if user_ctx.get('output_language') else '')
@@ -558,7 +581,7 @@ def _system_prompt(user_ctx, filters_text, availability, tool_mode_prompt_block)
     summaries_line = "stored summaries, " if availability.get('summaries') else ''
     return f"""You are a research assistant analyzing {user_ctx['name']}'s audio recording library \
 (meetings, calls, voice notes). {user_ctx['name']} is a(n) {user_ctx['title']} at {user_ctx['company']}. \
-{language_instruction}Today's date is {datetime.utcnow().strftime('%Y-%m-%d')}.
+{language_instruction}Today's date is {_today_for(user_ctx)}.
 
 You have tools to search transcripts, list recordings, and read transcripts, {summaries_line}{notes_line}\
 and metadata{filters_text}. Work iteratively: search or browse first, read more where needed, and only \
@@ -804,6 +827,9 @@ def run_inquire_agent(app, user_id, user_ctx, user_message, message_history,
         if f.get('tag_ids'):
             names = [t.name for t in Tag.query.filter(Tag.id.in_(f['tag_ids'])).all()]
             filter_bits.append(f"tags: {', '.join(names)}")
+        if f.get('folder_ids'):
+            names = [x.name for x in Folder.query.filter(Folder.id.in_(f['folder_ids'])).all()]
+            filter_bits.append(f"folders: {', '.join(names)}")
         if f.get('speaker_names'):
             filter_bits.append(f"speakers: {', '.join(f['speaker_names'])}")
         if f.get('date_from') or f.get('date_to'):

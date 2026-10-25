@@ -3,6 +3,8 @@
  * Handles public and internal sharing of recordings
  */
 
+const { ref } = Vue;
+
 export function useSharing(state, utils) {
     const {
         showShareModal, showSharesListModal, showShareDeleteModal,
@@ -19,6 +21,14 @@ export function useSharing(state, utils) {
     const { showToast, setGlobalError } = utils;
 
     let userSearchTimeout = null;
+
+    // Shared Transcripts list (#416): what the user shared (public links,
+    // people and groups) and what others shared with them.
+    const sharesTab = ref('by_me');
+    const sharesByMe = ref([]);
+    const sharesWithMe = ref([]);
+    const sharesPublicEnabled = ref(true);
+    const sharesInternalEnabled = ref(false);
 
     // Helper function to format share dates
     const formatShareDate = (dateString) => {
@@ -39,21 +49,25 @@ export function useSharing(state, utils) {
             const diffMs = now - date;
             const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
+            // The interface locale picks the words and the 12/24-hour clock (#480).
+            const locale = window.i18n?.getIntlLocale?.();
+            const time = () => date.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
+
             // If today
             if (diffDays === 0) {
-                return 'Today at ' + date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                return (utils.t ? utils.t('sidebar.today') : 'Today') + ', ' + time();
             }
             // If yesterday
             else if (diffDays === 1) {
-                return 'Yesterday at ' + date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                return (utils.t ? utils.t('sidebar.yesterday') : 'Yesterday') + ', ' + time();
             }
             // If within last week
             else if (diffDays < 7) {
-                return date.toLocaleDateString('en-US', { weekday: 'long', hour: 'numeric', minute: '2-digit', hour12: true });
+                return date.toLocaleDateString(locale, { weekday: 'long', hour: 'numeric', minute: '2-digit' });
             }
             // Otherwise show full date
             else {
-                return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+                return date.toLocaleDateString(locale, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
             }
         } catch (e) {
             console.error('Error formatting date:', e);
@@ -299,10 +313,16 @@ export function useSharing(state, utils) {
         isLoadingShares.value = true;
         showSharesListModal.value = true;
         try {
-            const response = await fetch('/api/shares');
+            const response = await fetch('/api/shares/overview');
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Failed to load shared items');
-            userShares.value = data;
+            userShares.value = data.public_links || [];
+            sharesByMe.value = (data.shared_by_me || []).map(r => ({
+                ...r, recipients: r.recipients.map(p => ({ ...p, confirming: false })),
+            }));
+            sharesWithMe.value = data.shared_with_me || [];
+            sharesPublicEnabled.value = data.public_sharing_enabled !== false;
+            sharesInternalEnabled.value = !!data.internal_sharing_enabled;
         } catch (error) {
             setGlobalError(`Failed to load shared items: ${error.message}`);
         } finally {
@@ -313,6 +333,32 @@ export function useSharing(state, utils) {
     const closeSharesList = () => {
         showSharesListModal.value = false;
         userShares.value = [];
+        sharesByMe.value = [];
+        sharesWithMe.value = [];
+    };
+
+    // Revoke one person's access from the list. The first click asks, the
+    // second revokes; a group share follows its tag or folder and has no
+    // button here.
+    const revokeShareFromList = async (entry, recipient) => {
+        if (!recipient.confirming) {
+            recipient.confirming = true;
+            return;
+        }
+        try {
+            const response = await fetch(`/api/internal-shares/${recipient.share_id}`, { method: 'DELETE' });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || 'Failed to revoke share');
+            entry.recipients = entry.recipients.filter(p => p.share_id !== recipient.share_id);
+            if (!entry.recipients.length) {
+                sharesByMe.value = sharesByMe.value.filter(r => r !== entry);
+            }
+            showToast(utils.t ? utils.t('sharedTranscripts.accessRevoked') : 'Access revoked', 'fa-user-times');
+            await refreshRecordingShareCounts();
+        } catch (error) {
+            recipient.confirming = false;
+            setGlobalError(`Failed to revoke share: ${error.message}`);
+        }
     };
 
     const updateShare = async (share) => {
@@ -645,6 +691,12 @@ export function useSharing(state, utils) {
         // Shares list
         openSharesList,
         closeSharesList,
+        sharesTab,
+        sharesByMe,
+        sharesWithMe,
+        sharesPublicEnabled,
+        sharesInternalEnabled,
+        revokeShareFromList,
         updateShare,
         confirmDeleteShare,
         cancelDeleteShare,

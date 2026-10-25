@@ -144,6 +144,9 @@ export function useAudio(state, utils) {
     //
     // None of this is exposed on the shared state surface yet; the UI to
     // monitor sync backlog lands in Phase C.
+    // startTime of the crash-recovery session this recording is saved under,
+    // handed to the upload so only that session is cleared afterwards (#407).
+    let currentRecordingSessionStartTime = null;
     let serverSessionId = null;
     let serverSessionUploader = null;
     let serverSessionMimeType = 'audio/webm';
@@ -465,7 +468,8 @@ export function useAudio(state, utils) {
                 try {
                     const displayStream = await navigator.mediaDevices.getDisplayMedia({
                         video: true,
-                        audio: true
+                        audio: true,
+                        audioSelection: 'preferred'
                     });
 
                     // Check if we got an audio track
@@ -536,7 +540,33 @@ export function useAudio(state, utils) {
     // existing server session after a page reload: a fresh MediaRecorder keeps
     // POSTing chunks to the same session id, and its header chunk starts a new
     // segment that the server-side assembly concatenates onto the prior audio.
+    // Storage quota (#413): a new recording starts only below the quota, and
+    // once started it is kept whatever its length. A failed check never
+    // blocks the recorder.
+    const hasStorageRoom = async () => {
+        try {
+            const response = await fetch('/api/account/storage', { credentials: 'same-origin' });
+            if (!response.ok) return true;
+            const usage = await response.json();
+            if (!usage.quota_bytes || usage.used_bytes < usage.quota_bytes) return true;
+            const message = (utils.t && utils.t('storageQuota.recordingBlocked', {
+                used: formatFileSize(usage.used_bytes), quota: formatFileSize(usage.quota_bytes),
+            })) || 'Your storage is full. Delete recordings or remove their audio before recording again.';
+            setGlobalError(message);
+            return false;
+        } catch (e) {
+            return true;
+        }
+    };
+
     const startRecordingInternal = async (mode, resumeContext = null) => {
+        if (!resumeContext && !(incognitoMode && incognitoMode.value) && !(await hasStorageRoom())) {
+            if (pendingDisplayStream) {
+                pendingDisplayStream.getTracks().forEach(track => track.stop());
+                pendingDisplayStream = null;
+            }
+            return;
+        }
         try {
             recordingMode.value = mode;
             recordingVideoActive.value = false;
@@ -739,7 +769,8 @@ export function useAudio(state, utils) {
                             echoCancellation: false,
                             noiseSuppression: false,
                             autoGainControl: false
-                        }
+                        },
+                        audioSelection: 'preferred'
                     };
                     stream = await navigator.mediaDevices.getDisplayMedia(displayMediaConstraints);
                 }
@@ -816,7 +847,8 @@ export function useAudio(state, utils) {
                             echoCancellation: false,
                             noiseSuppression: false,
                             autoGainControl: false
-                        }
+                        },
+                        audioSelection: 'preferred'
                     });
                 }
 
@@ -902,8 +934,9 @@ export function useAudio(state, utils) {
             }
 
             // Start IndexedDB recording session - convert Vue reactive objects to plain objects
+            currentRecordingSessionStartTime = null;
             try {
-                await RecordingDB.startRecordingSession({
+                const savedSession = await RecordingDB.startRecordingSession({
                     mode,
                     notes: recordingNotes.value || '',
                     tags: selectedTagIds.value ? [...selectedTagIds.value] : [], // Convert reactive array to plain array
@@ -918,6 +951,7 @@ export function useAudio(state, utils) {
                     mimeType,
                     incognito: !!(incognitoMode && incognitoMode.value)
                 });
+                currentRecordingSessionStartTime = savedSession ? savedSession.startTime : null;
             } catch (dbError) {
                 console.warn('[Recording] IndexedDB persistence failed, continuing without persistence:', dbError);
             }
@@ -1341,6 +1375,7 @@ export function useAudio(state, utils) {
             recordingId: null,
             clientId: queueClientId,
             fromInProgressRecording: true,  // marker: upload-success handler clears RecordingDB session
+            recordingSessionStartTime: currentRecordingSessionStartTime,  // clear only this session (#407)
             error: null,
             willAutoSummarize: false // Server will tell us via SUMMARIZING status
         });
@@ -1433,10 +1468,11 @@ export function useAudio(state, utils) {
     // Called by the merge modal (recording mode) on confirm: finalize the
     // recording session with the merge intent. `orderedSpec` is the ordered
     // source list with the string '__self__' marking this clip's position.
-    const finalizeRecordingMerge = async (orderedSpec, { deleteOriginals = true, title = undefined, notesSource = undefined } = {}) => {
+    const finalizeRecordingMerge = async (orderedSpec, { deleteOriginals = true, removeOriginalAudio = false, title = undefined, notesSource = undefined } = {}) => {
         const mergeIntent = {
             order: orderedSpec,
             delete_originals: !!deleteOriginals,
+            remove_original_audio: !deleteOriginals && !!removeOriginalAudio,
             title: title || undefined,
         };
         // notesSource: '__self__' | <id> | null. Only include the key when the
@@ -1824,6 +1860,7 @@ export function useAudio(state, utils) {
 
             // Restore chunks
             audioChunks.value = recovered.chunks;
+            currentRecordingSessionStartTime = recovered.metadata.startTime || null;
 
             // Create blob URL. Also restore the recording's mime type so the
             // legacy upload path builds the File with the right container

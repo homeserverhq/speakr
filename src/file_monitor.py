@@ -16,9 +16,11 @@ from datetime import datetime
 from pathlib import Path
 import mimetypes
 from werkzeug.utils import secure_filename
-from src.utils.ffprobe import get_codec_info, get_creation_date, get_duration, FFProbeError
+from src.utils.ffprobe import get_codec_info, get_creation_date, get_duration, FFProbeError, has_audio_stream
 from src.utils.ffmpeg_utils import FFmpegError, FFmpegNotFoundError
 from src.utils.audio_conversion import convert_if_needed
+from src.utils.filenames import shorten_filename
+from src.utils.titles import placeholder_titles
 
 # Video retention - when enabled, video files keep their video stream for playback
 VIDEO_RETENTION = os.environ.get('VIDEO_RETENTION', 'false').lower() == 'true'
@@ -66,7 +68,10 @@ class FileMonitor:
         self._valid_users = {}  # Maps user_id to username
         self._username_to_id = {}  # Maps username to user_id
         self._last_user_cache_update = 0
-        
+
+        # Files left in the folder for the storage quota, logged once (#413)
+        self._quota_skipped = set()
+
     def start(self):
         """Start the file monitoring in a background thread."""
         if self.running:
@@ -349,7 +354,23 @@ class FileMonitor:
 
                 # Derive original filename by removing .processing suffix
                 original_filename = processing_path.name.replace('.processing', '')
-                safe_filename = secure_filename(original_filename)
+
+                # Storage quota (#413): a file that does not fit stays in the
+                # folder untouched and is tried again on later scans; the user
+                # gets one notification, resolved when there is room.
+                from src.services.storage_quota import check_room, StorageQuotaExceeded, raise_notice
+                try:
+                    check_room(user, processing_path.stat().st_size)
+                except StorageQuotaExceeded as quota_error:
+                    original_path = processing_path.with_name(original_filename)
+                    processing_path.rename(original_path)
+                    if str(original_path) not in self._quota_skipped:
+                        self._quota_skipped.add(str(original_path))
+                        self.logger.info(f"Left {original_path} in the watch folder: {quota_error}")
+                        raise_notice(user, quota_error, original_filename)
+                    return
+                self._quota_skipped.discard(str(processing_path.with_name(original_filename)))
+                safe_filename = shorten_filename(secure_filename(original_filename))
                 timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
                 new_filename = f"auto_{timestamp}_{safe_filename}"
                 
@@ -405,8 +426,10 @@ class FileMonitor:
                 # Check if this is a video file (for video retention logic)
                 has_video = codec_info.get('has_video', False) if codec_info else False
 
-                # Video passthrough or retention: skip conversion for videos
-                if (VIDEO_PASSTHROUGH_ASR or VIDEO_RETENTION) and has_video:
+                # Video passthrough or retention: skip conversion for videos.
+                # A video without an audio track goes through conversion,
+                # which refuses it, as without these settings.
+                if (VIDEO_PASSTHROUGH_ASR or VIDEO_RETENTION) and has_video and has_audio_stream(codec_info):
                     self.logger.info(f"Video {'passthrough' if VIDEO_PASSTHROUGH_ASR else 'retention'}: keeping original video, skipping conversion")
                     final_path = destination_path
                 else:
@@ -427,7 +450,7 @@ class FileMonitor:
                         if result.was_converted:
                             self.logger.info(f"File converted: {result.original_codec} -> {result.final_codec}")
                         if result.was_compressed:
-                            self.logger.info(f"File compressed: {result.size_reduction_percent:.1f}% size reduction")
+                            self.logger.info(f"File compressed: {result.size_change_label}")
 
                     except FFmpegNotFoundError as e:
                         self.logger.error(f"FFmpeg not found: {e}")
@@ -462,7 +485,9 @@ class FileMonitor:
 
                 # Try to extract creation date from file metadata, fall back to current time
                 if not meeting_date:
-                    meeting_date = get_creation_date(str(final_path))
+                    # Normalised to naive UTC like the upload path (#412 B6).
+                    from src.utils.dates import to_utc_naive
+                    meeting_date = to_utc_naive(get_creation_date(str(final_path)))
                     if meeting_date:
                         self.logger.info(f"Using file metadata creation date: {meeting_date}")
                     else:
@@ -490,7 +515,7 @@ class FileMonitor:
                 recording = Recording(
                     audio_path=None,
                     original_filename=original_filename,
-                    title=f"Auto-processed - {original_filename}",
+                    title=placeholder_titles(original_filename)[1],
                     file_size=file_size,
                     status='PENDING',
                     meeting_date=meeting_date,
@@ -532,6 +557,8 @@ class FileMonitor:
                         self.logger.info(f"Applied tag '{tag.name}' (id={tag_id}) to recording {recording.id}")
 
                 db.session.commit()
+                from src.services.webhook_dispatch import emit_recording_created
+                emit_recording_created(recording)
 
                 # Resolve transcribe params through the shared chain so an
                 # auto-processed file honors the same tag/folder/env/account

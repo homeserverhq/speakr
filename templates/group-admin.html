@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    {% include 'includes/theme_account.html' %}
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
@@ -12,12 +13,12 @@
 
     <link rel="icon" href="{{ url_for('static', filename='img/favicon.ico') }}" type="image/svg+xml">
         <!-- All dependencies bundled locally for offline support -->
-<script src="{{ url_for('static', filename='vendor/js/tailwind.min.js') }}"></script>
         <!-- All dependencies bundled locally for offline support -->
 <script src="{{ url_for('static', filename='vendor/js/vue.global.js') }}"></script>
         <!-- All dependencies bundled locally for offline support -->
 <link rel="stylesheet" href="{{ url_for('static', filename='vendor/css/fontawesome.min.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    {% include 'includes/i18n_bootstrap.html' %}
     <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
     <style>
         /* Hide Vue content until compiled */
@@ -111,51 +112,16 @@
         }
         applyTheme();
     </script>
+    <!-- Tailwind utilities, compiled at build time (scripts/build_css.sh). Last in
+         <head> so that, as with the former runtime build, they follow the page's
+         own stylesheets in the cascade. -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}">
 </head>
 <body class="bg-[var(--bg-primary)] text-[var(--text-primary)]">
+    {% set page_label = 'Group Management' %}
+    {% set page_label_key = 'nav.groupManagement' %}
+    {% include 'components/page-header.html' %}
     <div id="app" v-cloak class="container mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-col min-h-screen">
-        <header class="flex justify-between items-center mb-6 pb-4 border-b border-[var(--border-primary)]">
-            <h1 class="text-3xl font-bold text-[var(--text-primary)]">
-                <a href="{{ url_for('recordings.index') }}" class="flex items-center">
-                    <img src="{{ url_for('static', filename='img/icon-192x192.png') }}" alt="Speakr Logo" class="app-logo h-9 w-9 mr-2">
-                    Speakr
-                </a>
-            </h1>
-            <div class="flex items-center space-x-2">
-                <button @click="toggleDarkMode" class="p-2 rounded-full text-[var(--text-muted)] hover:bg-[var(--bg-tertiary)] dark:text-gray-400 dark:hover:bg-gray-700 transition-colors duration-200" :title="isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'">
-                    <i :class="isDarkMode ? 'fas fa-sun' : 'fas fa-moon'"></i>
-                </button>
-                <div class="relative">
-                    <button @click="isUserMenuOpen = !isUserMenuOpen"
-                            data-user-menu-toggle
-                            class="flex items-center px-3 py-2 border border-[var(--border-secondary)] rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-accent)] focus:outline-none">
-                        <i class="fas fa-users-cog mr-2"></i>
-                        <span>{{ current_user.username }}</span>
-                        <i class="fas fa-chevron-down ml-2"></i>
-                    </button>
-                    <div v-if="isUserMenuOpen"
-                         data-user-menu-dropdown
-                         class="absolute right-0 mt-2 w-48 bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-lg shadow-lg z-10">
-                        <a href="{{ url_for('recordings.index') }}" class="block px-4 py-2 text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-accent)]">
-                            <i class="fas fa-home mr-2"></i> Home
-                        </a>
-                        <a href="{{ url_for('auth.account') }}" class="block px-4 py-2 text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-accent)]">
-                            <i class="fas fa-user mr-2"></i> Account
-                        </a>
-                        <a href="{{ url_for('admin.group_management') }}" class="block px-4 py-2 text-[var(--text-accent)] bg-[var(--bg-accent)]">
-                            <i class="fas fa-users-cog mr-2"></i>
-                            Group Management
-                        </a>
-                        <form method="POST" action="{{ url_for('auth.logout') }}" class="m-0">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit" class="w-full text-left block px-4 py-2 text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-danger)]">
-                                <i class="fas fa-sign-out-alt mr-2"></i> Sign Out
-                            </button>
-                        </form>
-                    </div>
-                </div>
-            </div>
-        </header>
 
         <main class="flex-grow">
             <div class="bg-[var(--bg-secondary)] p-4 sm:p-6 lg:p-8 rounded-xl shadow-lg border border-[var(--border-primary)]">
@@ -211,7 +177,7 @@
                                             </div>
                                         </td>
                                         <td class="px-6 py-4 whitespace-nowrap text-sm text-[var(--text-muted)]">
-                                            ${ parseInstant(group.created_at).toLocaleDateString() }
+                                            ${ parseInstant(group.created_at).toLocaleDateString(uiLocale()) }
                                         </td>
                                         <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
                                             <button @click="openManageTeamModal(group)" class="text-blue-500 hover:text-blue-700" title="Manage Members">
@@ -468,6 +434,14 @@
                                 Recordings with this tag will use this prompt for AI summaries and chat.
                             </p>
                         </div>
+                        <!-- Title Prompt (#400) -->
+                        <div>
+                            <label class="block text-xs font-medium text-[var(--text-secondary)] mb-1" v-text="t('editTagModal.titlePrompt')"></label>
+                            <textarea v-model="newTeamTag.title_prompt" rows="2"
+                                   class="w-full px-3 py-2 border border-[var(--border-secondary)] rounded-md bg-[var(--bg-input)] text-[var(--text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--border-focus)]"
+                                   :placeholder="t('editTagModal.titlePromptPlaceholder')"></textarea>
+                            <p class="text-xs text-[var(--text-muted)] mt-1" v-text="t('editTagModal.titlePromptHelp')"></p>
+                        </div>
 
                         <!-- Transcription Settings -->
                         <div class="grid grid-cols-3 gap-3">
@@ -653,6 +627,14 @@
                             <p class="text-xs text-[var(--text-muted)] mt-1">
                                 Recordings in this folder will use this prompt (unless overridden by a tag).
                             </p>
+                        </div>
+                        <!-- Title Prompt (#400) -->
+                        <div>
+                            <label class="block text-xs font-medium text-[var(--text-secondary)] mb-1" v-text="t('folderManagement.titlePrompt')"></label>
+                            <textarea v-model="newTeamFolder.title_prompt" rows="2"
+                                   class="w-full px-3 py-2 border border-[var(--border-secondary)] rounded-md bg-[var(--bg-input)] text-[var(--text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--border-focus)]"
+                                   :placeholder="t('folderManagement.titlePromptPlaceholder')"></textarea>
+                            <p class="text-xs text-[var(--text-muted)] mt-1" v-text="t('folderManagement.titlePromptHelp')"></p>
                         </div>
 
                         <!-- Transcription Settings -->
@@ -846,6 +828,7 @@
                     name: '',
                     color: '#3B82F6',
                     custom_prompt: '',
+                    title_prompt: '',
                     default_language: '',
                     default_min_speakers: null,
                     default_max_speakers: null,
@@ -865,6 +848,7 @@
                     name: '',
                     color: '#10B981',
                     custom_prompt: '',
+                    title_prompt: '',
                     default_language: '',
                     default_min_speakers: null,
                     default_max_speakers: null,
@@ -1131,6 +1115,7 @@
                         name: '',
                         color: '#3B82F6',
                         custom_prompt: '',
+                        title_prompt: '',
                         default_language: '',
                         default_min_speakers: null,
                         default_max_speakers: null,
@@ -1159,6 +1144,7 @@
                         name: tag.name,
                         color: tag.color,
                         custom_prompt: tag.custom_prompt || '',
+                        title_prompt: tag.title_prompt || '',
                         default_language: tag.default_language || '',
                         default_min_speakers: tag.default_min_speakers,
                         default_max_speakers: tag.default_max_speakers,
@@ -1177,6 +1163,7 @@
                         name: '',
                         color: '#3B82F6',
                         custom_prompt: '',
+                        title_prompt: '',
                         default_language: '',
                         default_min_speakers: null,
                         default_max_speakers: null,
@@ -1207,6 +1194,8 @@
                         if (newTeamTag.value.custom_prompt && newTeamTag.value.custom_prompt.trim()) {
                             payload.custom_prompt = newTeamTag.value.custom_prompt.trim();
                         }
+                        // Title instructions are always sent so clearing the field clears them (#400)
+                        payload.title_prompt = (newTeamTag.value.title_prompt || '').trim() || null;
 
                         // Add language if selected
                         if (newTeamTag.value.default_language) {
@@ -1254,6 +1243,7 @@
                             name: '',
                             color: '#3B82F6',
                             custom_prompt: '',
+                            title_prompt: '',
                             default_language: '',
                             default_min_speakers: null,
                             default_max_speakers: null,
@@ -1310,6 +1300,7 @@
                         name: '',
                         color: '#10B981',
                         custom_prompt: '',
+                        title_prompt: '',
                         default_language: '',
                         default_min_speakers: null,
                         default_max_speakers: null,
@@ -1338,6 +1329,7 @@
                         name: folder.name,
                         color: folder.color || '#10B981',
                         custom_prompt: folder.custom_prompt || '',
+                        title_prompt: folder.title_prompt || '',
                         default_language: folder.default_language || '',
                         default_min_speakers: folder.default_min_speakers,
                         default_max_speakers: folder.default_max_speakers,
@@ -1355,6 +1347,7 @@
                         name: '',
                         color: '#10B981',
                         custom_prompt: '',
+                        title_prompt: '',
                         default_language: '',
                         default_min_speakers: null,
                         default_max_speakers: null,
@@ -1384,6 +1377,10 @@
                         if (newTeamFolder.value.custom_prompt && newTeamFolder.value.custom_prompt.trim()) {
                             payload.custom_prompt = newTeamFolder.value.custom_prompt.trim();
                         }
+
+                        // Title instructions are always sent so clearing the field clears them (#400)
+
+                        payload.title_prompt = (newTeamFolder.value.title_prompt || '').trim() || null;
                         if (newTeamFolder.value.default_language) {
                             payload.default_language = newTeamFolder.value.default_language;
                         }
@@ -1422,6 +1419,7 @@
                             name: '',
                             color: '#10B981',
                             custom_prompt: '',
+                            title_prompt: '',
                             default_language: '',
                             default_min_speakers: null,
                             default_max_speakers: null,
@@ -1473,15 +1471,9 @@
                     }
                 };
 
-                const formatFileSize = (bytes) => {
-                    if (!bytes || bytes === 0) return '0 Bytes';
-                    
-                    const k = 1024;
-                    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-                    const i = Math.floor(Math.log(bytes) / Math.log(k));
-                    
-                    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-                };
+                // Localized number and units (#481)
+                // Without i18n.js (not loaded yet) the page still shows a size.
+                const formatFileSize = (bytes) => (window.i18n?.formatFileSize ? window.i18n.formatFileSize(bytes) : `${Number(bytes) || 0} bytes`);
                 
                 const toggleDarkMode = () => {
                     isDarkMode.value = !isDarkMode.value;
@@ -1492,6 +1484,7 @@
                         document.documentElement.classList.remove('dark');
                         localStorage.setItem('darkMode', 'false');
                     }
+                    if (window.speakrSaveTheme) window.speakrSaveTheme('darkMode');
                 };
 
                 const initializeDarkMode = () => {
@@ -1533,6 +1526,8 @@
                 return {
                     // i18n - bind to i18n instance to maintain context
                     t: (key, params) => i18nInstance ? i18nInstance.t(key, params) : key,
+                    // The interface locale for toLocale*String calls in the template (#480)
+                    uiLocale: () => window.i18n?.getIntlLocale?.(),
 
                     // State
                     isTeamAdminOnly,

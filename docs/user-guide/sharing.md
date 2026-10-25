@@ -154,9 +154,13 @@ The "Share Notes" option controls whether your personal notes are visible. These
 
 Once you've selected your options, click "Create Share Link" to generate the secure URL. The link appears immediately in the modal, ready to copy to your clipboard. This link is permanent until you explicitly revoke it, so recipients can bookmark it for future reference.
 
+### Share Links from Other Tools
+
+Integrations can create, list and revoke share links through the API (see [Share Links](api-reference.md#share-links)) with a token that has the `share` scope. A link created there shares the summary only unless notes are asked for, can expire after a number of days, and an existing link keeps its settings unless the request asks to change them.
+
 ## What Recipients Experience
 
-![Shared Recording View](../assets/images/screenshots/Share link.png)
+![Shared Recording View](../assets/images/screenshots/share-link.png)
 
 When someone clicks your share link, they're taken to a streamlined view of your recording designed for easy consumption without distractions. The interface is clean and professional, branded with Speakr but showing only the content you've chosen to share.
 
@@ -170,11 +174,11 @@ At the bottom of the page, recipients see a subtle footer indicating the content
 
 ## Managing Your Shared Recordings
 
-![Shared Transcripts](../assets/images/screenshots/share-summary-view.png)
+![Shared Transcripts](../assets/images/screenshots/settings-shared-transcripts.png)
 
 All your shared recordings are centrally managed through the Shared Transcripts section in your account settings. This gives you a complete overview of everything you've shared and with whom.
 
-The shared transcripts list shows each recording you've shared, when you created the share link, and what options you selected (summary and/or notes). Each entry includes the full share URL that you can copy again if needed - perhaps you've lost the original link or need to reshare with additional people.
+The list has three sections: your public links, the recordings you have shared with other users and groups, and the recordings shared with you. See [Shared Transcripts Tab](settings.md#shared-transcripts-tab). For public links, it shows each recording you've shared, when you created the share link, and what options you selected (summary and/or notes). Each entry includes the full share URL that you can copy again if needed - perhaps you've lost the original link or need to reshare with additional people.
 
 You can modify what's included in a share by toggling the summary and notes checkboxes directly in this interface. These changes take effect immediately for anyone accessing the link. This is useful when you initially share just the transcription but later decide to include the summary, or when you want to remove notes that are no longer relevant.
 

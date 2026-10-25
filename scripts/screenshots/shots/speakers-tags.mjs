@@ -6,7 +6,7 @@
 // (transcription defaults, summary prompt + title template, a real recipe
 // prompt, and the group auto-share options).
 
-import { go, settle, clickVisible, anchorSidebar } from '../helpers.mjs';
+import { go, settle, clickVisible, anchorSidebar, blurEmails, blurUrls } from '../helpers.mjs';
 
 /**
  * Recordings are addressed by id via the /recordings/<id> deep link rather
@@ -20,7 +20,7 @@ const REC = {
     voiceProfiles: 2279,
     // Round of manager introductions, tagged Important. Every speaker is
     // still a raw diarization label and each one says their own name in the
-    // transcript, which is exactly what Auto Identify reads — so the shot
+    // transcript, which is exactly what Identify from conversation reads — so the shot
     // shows names arriving rather than contradicting existing labels.
     autoIdentify: 2302,
     // Tech podcast, tagged AI. This one already carries a public share link,
@@ -119,14 +119,14 @@ async function showVoiceSuggestions(page) {
 }
 
 /**
- * Run Auto Identify (a real LLM call) and wait until the names have landed
+ * Run Identify from conversation (a real LLM call) and wait until the names have landed
  * in the fields and the progress toasts have gone.
  */
 async function runAutoIdentify(page, timeoutMs = 180000) {
     const before = await page.evaluate(() => [...document.querySelectorAll('.modal-panel input[type="text"]')]
         .filter((i) => i.value.trim()).length);
-    if (!(await clickVisible(page, '.modal-footer button:has-text("Auto Identify")'))) {
-        throw new Error('Auto Identify button not found');
+    if (!(await clickVisible(page, '.modal-footer button:has-text("Identify from conversation")'))) {
+        throw new Error('Identify from conversation button not found');
     }
     await page.waitForFunction(
         (n) => {
@@ -230,6 +230,9 @@ export default [
             }
             await page.waitForSelector('.modal-panel:has-text("Share Recording")', { state: 'visible' });
             await settle(page, 1200);
+            // Privacy: the modal shows the live share URL and user emails.
+            await blurEmails(page);
+            await blurUrls(page);
         },
     },
     {

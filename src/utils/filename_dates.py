@@ -14,6 +14,8 @@ storage. Callers pass ``tz_offset_minutes`` in JavaScript
 UTC; positive west of UTC). When no offset is known, date-only matches
 are anchored at 12:00 UTC so the calendar date survives rendering in any
 viewer timezone, and time-bearing matches are treated as already UTC.
+A time followed by a ``Z`` suffix (an ISO 8601 UTC time, as in the names of
+Speakr's own browser recordings) is UTC already and is not shifted (#486).
 """
 
 import re
@@ -58,6 +60,10 @@ AUTO_PRESET_ORDER = ('yyyymmdd_hhmm', 'yyyy-mm-dd', 'yyyymmdd', 'yymmdd_hhmm')
 
 VALID_PATTERN_KEYS = ('auto',) + tuple(PRESET_PATTERNS.keys()) + ('custom',)
 
+# Optional seconds and fraction, then the ISO 8601 "Z" marker, right after
+# the matched time: 11-43-00-000Z, 11:43:00.000Z, 1143Z.
+_UTC_SUFFIX = re.compile(r'(?:[-:._]?\d{2}(?:[-.,]\d{1,9})?)?Z(?![A-Za-z])')
+
 _MIN_YEAR = 1970
 _MAX_YEAR = 2100
 
@@ -91,7 +97,8 @@ def _has_time(groups) -> bool:
 
 def parse_filename_date(filename: str, pattern_key: str = 'auto',
                         custom_regex: Optional[str] = None,
-                        tz_offset_minutes: Optional[int] = None) -> Optional[datetime]:
+                        tz_offset_minutes: Optional[int] = None,
+                        tz_name: Optional[str] = None) -> Optional[datetime]:
     """
     Extract a meeting date from *filename* and return it as naive UTC.
 
@@ -138,7 +145,19 @@ def parse_filename_date(filename: str, pattern_key: str = 'auto',
         if parsed is None:
             continue
 
-        # Local wall-clock -> naive UTC per the storage convention.
+        if _has_time(groups) and _UTC_SUFFIX.match(stem, match.end()):
+            return parsed
+
+        # Local wall-clock -> naive UTC per the storage convention. A named zone
+        # (the browser's IANA zone) gives the offset that applied on that date,
+        # across daylight-saving changes; the browser's current offset is the
+        # fallback (#412 B9).
+        if tz_name:
+            from src.utils.timezones import is_valid_timezone
+            if is_valid_timezone(tz_name):
+                from zoneinfo import ZoneInfo
+                from datetime import timezone as _utc
+                return parsed.replace(tzinfo=ZoneInfo(tz_name)).astimezone(_utc.utc).replace(tzinfo=None)
         if tz_offset_minutes is not None:
             try:
                 offset = int(tz_offset_minutes)

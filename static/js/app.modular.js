@@ -9,10 +9,13 @@ import { useModals } from './modules/composables/modals.js';
 import { useSharing } from './modules/composables/sharing.js';
 import { useReprocess } from './modules/composables/reprocess.js';
 import { useTranscription } from './modules/composables/transcription.js';
+import { useFindReplace } from './modules/composables/find-replace.js';
 import { useSpeakers } from './modules/composables/speakers.js';
+import { useSpeakerModal } from './modules/composables/speaker-modal.js';
 import { useChat } from './modules/composables/chat.js';
 import { useTags } from './modules/composables/tags.js';
 import { usePWA } from './modules/composables/pwa.js';
+import { useNotifications } from './modules/composables/notifications.js';
 import { useVirtualScroll, getVirtualItemKey } from './modules/composables/virtualScroll.js';
 import { useBulkSelection } from './modules/composables/bulk-selection.js';
 import { useBulkOperations } from './modules/composables/bulk-operations.js';
@@ -21,7 +24,9 @@ import { useFolders } from './modules/composables/folders.js';
 // Import utilities
 import { showToast } from './modules/utils/toast.js';
 import { getContrastTextColor } from './modules/utils/colors.js';
+import { labelPathForFilter, parseLabelPath } from './modules/utils/label-links.js';
 import { buildVariableList } from './modules/utils/prompt-variables.js';
+import { errorTextMatches } from './modules/utils/error-patterns.js';
 import {
     detectPlatform,
     getAudioCapabilities,
@@ -138,7 +143,7 @@ const parseUnformattedError = (text) => {
             type: 'service_error'
         },
         {
-            patterns: ['invalid file format', 'unsupported format', 'could not decode', 'corrupt', 'not valid audio'],
+            patterns: ['invalid file format', 'unsupported format', 'could not decode', 'corrupt', 'not valid audio', 'invalid data found when processing input'],
             title: _t('errors.invalidAudioFormat', 'Invalid Audio Format'),
             message: _t('errors.invalidAudioFormatMessage', 'The audio file format is not supported or the file may be corrupted.'),
             guidance: _t('errors.invalidAudioFormatGuidance', 'Try converting the audio to MP3 or WAV format before uploading.'),
@@ -158,7 +163,7 @@ const parseUnformattedError = (text) => {
     // Check patterns
     for (const pattern of patterns) {
         for (const p of pattern.patterns) {
-            if (lowerText.includes(p)) {
+            if (errorTextMatches(lowerText, p)) {
                 return {
                     title: pattern.title,
                     message: pattern.message,
@@ -278,6 +283,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             // leave the modal alone (and consumes itself) so the deep-linked
             // upload modal stays open behind the freshly-loaded detail view.
             const uploadDeepLinkPending = ref(false);
+            // Set true on mount when arriving via the /label/<name> deep link.
+            // The first loadRecordings would otherwise auto-select the last
+            // viewed recording, opening the detail view and rewriting the
+            // address bar to /recordings/<id>. The flag suppresses that one
+            // auto-selection so the label list is what the user lands on.
+            const labelDeepLinkPending = ref(false);
             const dragover = ref(false);
             const recordings = ref([]);
             const selectedRecording = ref(null);
@@ -300,7 +311,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const filterNeedsTranscription = ref(false);
             const filterNeedsSummary = ref(false);
             const filterNeedsSpeakers = ref(false);
-            const showArchivedRecordings = ref(false);
+            const filterAudioRemoved = ref(false);  // recordings whose media file was removed
+            const showArchivedRecordings = ref(false);  // the user's archive view (#394)
             const showSharedWithMe = ref(false);
 
             // --- Pagination State ---
@@ -332,6 +344,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Detail-header "assign folder" dropdown (replaces a raw <select>
             // whose OS-rendered option list ignored the app theme).
             const showHeaderFolderMenu = ref(false);
+            const showHeaderReprocessMenu = ref(false);
+            const showHeaderMoreMenu = ref(false);
             const tokenBudget = ref({
                 has_budget: false,
                 budget: null,
@@ -734,13 +748,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             // declared). Declared here so the rest of this state block
             // can reference them without temporal-dead-zone errors.
             const asrEditorHydratedRows = ref(new Set());
-            const speakerModalHydratedRows = ref(new Set());
             const showCustomizeSummaryModal = ref(false);
             const customizeSummaryPrompt = ref('');
             const customizeSummaryMode = ref('append');  // 'append' | 'replace'
             const editingRecording = ref(null);
             const editingTranscriptionContent = ref('');
             const editingSegments = ref([]);
+            // Find and replace bar of the transcript editors (#440)
+            const findReplace = reactive({ open: false, find: '', replace: '', matchCase: false, wholeWord: false, current: -1 });
             const availableSpeakers = ref([]);
             const showEditSpeakersModal = ref(false);
             const editingSpeakersList = ref([]);
@@ -786,11 +801,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const speakerMap = ref({});
             const speakerColorMap = ref({}); // Stable mapping of speaker ID → color class
             const modalSpeakers = ref([]);
-            const speakerDisplayMap = ref({});
             const regenerateSummaryAfterSpeakerUpdate = ref(true);
-            const speakerSuggestions = ref({});
-            const loadingSuggestions = ref({});
-            const activeSpeakerInput = ref(null);
             const voiceSuggestions = ref({});
             const loadingVoiceSuggestions = ref(false);
 
@@ -932,6 +943,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Touch the tick to register reactivity for resize updates.
                 void chatLayoutTick.value;
 
+                if (chatPanelState.value === 'floating' && chatPanelX.value == null) {
+                    const r = _rect('#mainContentColumns');
+                    if (r && r.width > 0) {
+                        return {
+                            top: (r.bottom - chatPanelH.value - 24) + 'px',
+                            left: (r.right - chatPanelW.value - 24) + 'px',
+                            width: chatPanelW.value + 'px',
+                            height: chatPanelH.value + 'px',
+                            right: 'auto',
+                            bottom: 'auto'
+                        };
+                    }
+                }
                 if (chatPanelState.value === 'floating' && chatPanelX.value != null) {
                     return {
                         top: chatPanelY.value + 'px',
@@ -991,47 +1015,62 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return {};
             });
 
-            // Persistence per recording (best-effort; ignores errors).
-            const _chatPanelStorageKey = () => {
-                const rec = selectedRecording.value;
-                return rec ? `chat_panel_pos_${rec.id}` : null;
-            };
+            // One chat layout for every recording (best-effort; ignores
+            // errors). It used to be stored per recording with absolute
+            // viewport coordinates, so the panel opened on some recordings
+            // only and landed mid-page after the window or sidebar changed.
+            // The floating position is now kept as the gap to the
+            // bottom-right corner of #mainContentColumns, the corner the
+            // panel opens from, and every layout change re-applies that gap.
+            const CHAT_PANEL_KEY = 'chat_panel_layout';
+            let _chatAnchor = null;  // {dx, dy} of the floating panel
             const saveChatPanelPosition = () => {
-                const key = _chatPanelStorageKey();
-                if (!key) return;
-                try {
-                    localStorage.setItem(key, JSON.stringify({
-                        state: chatPanelState.value,
-                        x: chatPanelX.value,
-                        y: chatPanelY.value,
-                        w: chatPanelW.value,
-                        h: chatPanelH.value,
-                    }));
-                } catch (e) { /* ignore */ }
+                const data = { state: chatPanelState.value, w: chatPanelW.value, h: chatPanelH.value };
+                const r = _rect('#mainContentColumns');
+                if (chatPanelState.value === 'floating' && chatPanelX.value != null && r && r.width > 0) {
+                    data.dx = Math.round(r.right - (chatPanelX.value + chatPanelW.value));
+                    data.dy = Math.round(r.bottom - (chatPanelY.value + chatPanelH.value));
+                    _chatAnchor = { dx: data.dx, dy: data.dy };
+                } else if (_chatAnchor) {
+                    data.dx = _chatAnchor.dx;
+                    data.dy = _chatAnchor.dy;
+                }
+                try { localStorage.setItem(CHAT_PANEL_KEY, JSON.stringify(data)); } catch (e) { /* ignore */ }
+            };
+            const _applyChatAnchor = () => {
+                if (!_chatAnchor || chatPanelState.value !== 'floating') return;
+                if (chatDragActive.value || chatResizeActive.value) return;
+                const r = _rect('#mainContentColumns');
+                if (!r || r.width <= 0) return;
+                chatPanelX.value = r.right - chatPanelW.value - _chatAnchor.dx;
+                chatPanelY.value = r.bottom - chatPanelH.value - _chatAnchor.dy;
             };
             const restoreChatPanelPosition = () => {
-                const key = _chatPanelStorageKey();
-                if (!key) return;
+                const validStates = ['collapsed', 'floating', 'dock-left', 'dock-right', 'dock-full'];
+                let data = null;
                 try {
-                    const raw = localStorage.getItem(key);
-                    if (!raw) { chatPanelState.value = 'collapsed'; return; }
-                    const data = JSON.parse(raw);
-                    // Migrate legacy state values from the previous
-                    // panel design (docked-ne/nw/se/sw, maximized) to
-                    // the new state vocabulary.
-                    const validStates = ['collapsed', 'floating', 'dock-left', 'dock-right', 'dock-full'];
-                    let s = data.state || 'collapsed';
-                    if (!validStates.includes(s)) {
-                        // Any legacy value → collapse so the user opens fresh.
-                        s = 'collapsed';
+                    data = JSON.parse(localStorage.getItem(CHAT_PANEL_KEY) || 'null');
+                    // Drop the old per-recording entries.
+                    for (let i = localStorage.length - 1; i >= 0; i--) {
+                        const k = localStorage.key(i);
+                        if (k && k.startsWith('chat_panel_pos_')) localStorage.removeItem(k);
                     }
-                    chatPanelState.value = s;
-                    chatPanelX.value = data.x;
-                    chatPanelY.value = data.y;
-                    if (data.w) chatPanelW.value = data.w;
-                    if (data.h) chatPanelH.value = data.h;
-                } catch (e) {
+                } catch (e) { data = null; }
+                if (!data || !validStates.includes(data.state)) {
                     chatPanelState.value = 'collapsed';
+                    return;
+                }
+                if (data.w) chatPanelW.value = data.w;
+                if (data.h) chatPanelH.value = data.h;
+                chatPanelState.value = data.state;
+                _chatAnchor = Number.isFinite(data.dx) && Number.isFinite(data.dy)
+                    ? { dx: data.dx, dy: data.dy } : null;
+                if (data.state === 'floating') {
+                    if (!_chatAnchor) _chatAnchor = { dx: 24, dy: 24 };
+                    // Placed by the next layout pass, once the detail view
+                    // of this recording has its final size.
+                    chatPanelX.value = null;
+                    chatPanelY.value = null;
                 }
             };
 
@@ -1247,9 +1286,50 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // didn't actually drag.
             };
 
+            // Pull a floating panel back inside the content area (#383).
+            // Position and size are persisted per recording and restored
+            // verbatim, and the drag handler only clamps on release, so a
+            // panel saved on a large window came back off-screen on a
+            // smaller one — with its header, and therefore its close and
+            // dock buttons, above the visible area and unreachable. The
+            // only way out was clearing localStorage by hand. Clamping
+            // here covers both the restore (the selectedRecording watch
+            // bumps the layout on the next tick) and a live resize.
+            const clampChatPanelIntoView = () => {
+                if (chatPanelState.value !== 'floating') return;
+                if (chatPanelX.value == null || chatPanelY.value == null) return;
+                // Don't fight the user mid-gesture; the drag and resize
+                // handlers clamp on release.
+                if (chatDragActive.value || chatResizeActive.value) return;
+                const cols = _rect('#mainContentColumns');
+                if (!cols || cols.width <= 0) return;
+
+                // Shrink first: clamping a panel that no longer fits would
+                // otherwise push its left/top edge off the other side.
+                const MIN_W = 320, MIN_H = 360;
+                chatPanelW.value = Math.max(MIN_W, Math.min(chatPanelW.value, cols.width - 16));
+                chatPanelH.value = Math.max(MIN_H, Math.min(chatPanelH.value, cols.height - 16));
+
+                // Math.max last so the top-left corner always wins when the
+                // panel is larger than the area it has to fit into: a
+                // reachable header matters more than a fully visible panel.
+                chatPanelX.value = Math.max(
+                    cols.left + 8,
+                    Math.min(chatPanelX.value, cols.right - chatPanelW.value - 8)
+                );
+                chatPanelY.value = Math.max(
+                    cols.top + 8,
+                    Math.min(chatPanelY.value, cols.bottom - chatPanelH.value - 8)
+                );
+            };
+
             // Bump the layout tick on window resize / sidebar toggle so
             // the docked positioning style recomputes.
-            const _bumpChatLayout = () => { chatLayoutTick.value += 1; };
+            const _bumpChatLayout = () => {
+                _applyChatAnchor();
+                clampChatPanelIntoView();
+                chatLayoutTick.value += 1;
+            };
             if (typeof window !== 'undefined') {
                 window.addEventListener('resize', _bumpChatLayout);
                 // Close the floating-chat dock dropdown on any outside click.
@@ -1312,7 +1392,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             const playbackSpeeds = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
             const speedMenuPosition = ref({});
             const showVolumeSlider = ref(false);
-            const showModalVolumeSlider = ref(false);
             const showDuplicatesModal = ref(false);
             const videoCollapsed = ref(false);
             // Desktop docked-video panel: shows the video in a strip across
@@ -1430,7 +1509,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const currentUserName = ref('');
             const canDeleteRecordings = ref(true);
             const enableInternalSharing = ref(false);
-            const enableArchiveToggle = ref(false);
+            const enableAudioRemovedFilter = ref(false);
             const showUsernamesInUI = ref(false);
 
             // --- Internal Sharing State ---
@@ -1448,10 +1527,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // --- Reprocessing Polls ---
             const reprocessingPolls = ref(new Map());
-
-            // --- Speaker Groups State ---
-            const currentSpeakerGroupIndex = ref(0);
-            const speakerGroups = ref([]);
 
             // --- Virtual Scroll Container Refs ---
             const speakerModalTranscriptRef = ref(null);
@@ -1472,10 +1547,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             // win is preserved. Keep the hydrate stubs as no-ops in case
             // any leftover template reference still calls them.
             const hydrateAsrEditorRow = () => {};
-            const hydrateSpeakerModalRow = () => {};
 
             // --- Computed properties needed by composables ---
             const isMobileScreen = computed(() => windowWidth.value < 1024);
+
+            // Collapse the sidebar when the window becomes narrow enough that
+            // it turns into an overlay. Below the lg breakpoint an expanded
+            // sidebar draws a backdrop over the whole app, so a desktop window
+            // dragged narrow -- or, far more often, an iPad turned to portrait
+            // -- would otherwise grey itself out with no hint as to why.
+            // Only the crossing matters, so someone who opens the sidebar on a
+            // narrow screen keeps it open.
+            watch(isMobileScreen, (narrow) => {
+                if (narrow) isSidebarCollapsed.value = true;
+            });
 
             // Word-count meta surfaced in the right-rail tab labels. We
             // strip HTML and collapse whitespace before counting so
@@ -1734,21 +1819,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             // =========================================================================
             const state = {
                 // Core
-                currentView, showUploadModal, uploadDeepLinkPending, dragover, recordings, selectedRecording, selectedTab, searchQuery,
+                currentView, showUploadModal, uploadDeepLinkPending, labelDeepLinkPending, dragover, recordings, selectedRecording, selectedTab, searchQuery,
                 isLoadingRecordings, globalError, csrfToken,
 
                 // Filters
                 showAdvancedFilters, filterTags, filterSpeakers, filterTagSearch, filterSpeakerSearch,
                 filterDateRange, filterDatePreset, filterTextQuery, filterStarred, filterInbox,
                 filterNeedsTranscription, filterNeedsSummary, filterNeedsSpeakers,
-                showArchivedRecordings, showSharedWithMe, sortBy, selectedTagFilter,
+                filterAudioRemoved, showArchivedRecordings, showSharedWithMe, sortBy, selectedTagFilter,
 
                 // Pagination
                 currentPage, perPage, totalRecordings, totalPages, hasNextPage, hasPrevPage,
                 isLoadingMore, searchDebounceTimer,
 
                 // UI
-                browser, isSidebarCollapsed, searchTipsExpanded, isUserMenuOpen, showHeaderFolderMenu, tokenBudget, isDarkMode,
+                browser, isSidebarCollapsed, searchTipsExpanded, isUserMenuOpen, showHeaderFolderMenu, showHeaderReprocessMenu, showHeaderMoreMenu, tokenBudget, isDarkMode,
                 currentColorScheme, showColorSchemeModal, windowWidth, mobileTab, mobileMoreOpen, isMetadataExpanded, expandedSection,
                 showSortOptions, currentLanguage, currentLanguageName, availableLanguages, showLanguageMenu,
                 colorSchemes, isMobileScreen, isMobileDevice,
@@ -1795,8 +1880,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Modals
                 showEditModal, showDeleteModal, showEditTagsModal, selectedNewTagId, tagSearchFilter,
                 showReprocessModal, showResetModal, showSpeakerModal, speakerModalTab, speakerModalVideoCollapsed, toggleSpeakerModalVideo, showShareModal, showSharesListModal,
-                showTextEditorModal, showAsrEditorModal, asrEditorHydratedRows, hydrateAsrEditorRow, speakerModalHydratedRows, hydrateSpeakerModalRow, showCustomizeSummaryModal, customizeSummaryPrompt, customizeSummaryMode, editingRecording, editingTranscriptionContent,
-                editingSegments, availableSpeakers, showEditSpeakersModal, editingSpeakersList,
+                showTextEditorModal, showAsrEditorModal, asrEditorHydratedRows, hydrateAsrEditorRow, showCustomizeSummaryModal, customizeSummaryPrompt, customizeSummaryMode, editingRecording, editingTranscriptionContent,
+                editingSegments, findReplace, availableSpeakers, showEditSpeakersModal, editingSpeakersList,
                 databaseSpeakers, editingSpeakerSuggestions,
                 showEditParticipantsModal, editingParticipantsList, editingParticipantSuggestions, allParticipants,
                 recordingToShare, shareOptions,
@@ -1805,8 +1890,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 shareToDelete, showShareDeleteModal, recordingToDelete, recordingToReset,
                 reprocessType, reprocessRecording, reprocessPromptVariables, isAutoIdentifying, asrReprocessOptions,
                 summaryReprocessPromptSource, summaryReprocessSelectedTagId, summaryReprocessCustomPrompt, summaryReprocessPromptMode,
-                speakerMap, speakerColorMap, modalSpeakers, speakerDisplayMap, regenerateSummaryAfterSpeakerUpdate, speakerSuggestions,
-                loadingSuggestions, activeSpeakerInput, voiceSuggestions, loadingVoiceSuggestions,
+                speakerMap, speakerColorMap, modalSpeakers, regenerateSummaryAfterSpeakerUpdate,
+                voiceSuggestions, loadingVoiceSuggestions,
 
                 // DateTime Picker
                 showDateTimePicker, pickerMonth, pickerYear, pickerHour, pickerMinute,
@@ -1843,7 +1928,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Audio Player
                 playerVolume, audioIsPlaying, audioCurrentTime, audioDuration, audioIsMuted, audioIsLoading, asrEditorAudio,
                 modalAudioCurrentTime, modalAudioDuration, modalAudioIsPlaying, modalPlaybackRate,
-                playbackRate, showSpeedMenu, playbackSpeeds, speedMenuPosition, showVolumeSlider, showModalVolumeSlider,
+                playbackRate, showSpeedMenu, playbackSpeeds, speedMenuPosition, showVolumeSlider,
                 videoFullscreen, fullscreenControlsVisible, fullscreenControlsTimer, videoCollapsed,
                 videoDockEnabled, isVideoRecording, toggleVideoDock,
                 videoDockPosition, cycleVideoDockColumn, cycleVideoDockVertical,
@@ -1857,7 +1942,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 openAsrDropdownIndex,
 
                 // App Config
-                useAsrEndpoint, connectorSupportsDiarization, connectorSupportsSpeakerCount, connectorSupportsExactSpeakerCount, speakerCountMode, connectorSupportsHotwords, connectorSupportsInitialPrompt, showTimestampsSimpleView, editorAutosave, audioPlayerPosition, formatTimestamp, currentUserName, canDeleteRecordings, enableInternalSharing, enableArchiveToggle, showUsernamesInUI,
+                useAsrEndpoint, connectorSupportsDiarization, connectorSupportsSpeakerCount, connectorSupportsExactSpeakerCount, speakerCountMode, connectorSupportsHotwords, connectorSupportsInitialPrompt, showTimestampsSimpleView, editorAutosave, audioPlayerPosition, formatTimestamp, currentUserName, canDeleteRecordings, enableInternalSharing, enableAudioRemovedFilter, showUsernamesInUI,
 
                 // Internal Sharing
                 showUnifiedShareModal, internalShareUserSearch, internalShareSearchResults,
@@ -1866,9 +1951,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 // Reprocessing
                 reprocessingPolls,
-
-                // Speaker Groups
-                currentSpeakerGroupIndex, speakerGroups,
 
                 // Virtual Scroll
                 speakerModalTranscriptRef, mainTranscriptRef, asrEditorRef, asrEditorSaveFlash, asrEditorHighlightIndex
@@ -1941,21 +2023,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 modalAudioIsPlaying.value = false;
             };
 
-            const formatFileSize = (bytes) => {
-                if (!bytes) return '0 B';
-                const k = 1024;
-                const sizes = ['B', 'KB', 'MB', 'GB'];
-                const i = Math.floor(Math.log(bytes) / Math.log(k));
-                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-            };
+            // Localized number and units (#481)
+            // Without i18n.js (not loaded yet) the page still shows a size.
+            const formatFileSize = (bytes) => (window.i18n?.formatFileSize ? window.i18n.formatFileSize(bytes) : `${Number(bytes) || 0} bytes`);
+            const formatPercent = (pct, options) => (window.i18n?.formatPercent ? window.i18n.formatPercent(pct, options) : `${Math.round((Number(pct) || 0) * 10) / 10}%`);
+            const formatNumber = (n, options) => (window.i18n?.formatNumber ? window.i18n.formatNumber(n, options) : String(n));
 
             // Parse a backend INSTANT timestamp. The backend stores/serializes
             // naive UTC (no zone designator); new Date() would parse a zoneless
             // string as LOCAL, showing the UTC clock value instead of converting
             // it. Append 'Z' so it's parsed as UTC; toLocale* then renders it in
-            // the viewer's own timezone. Do NOT use this for calendar fields
-            // (meeting_date) or wall-clock event times — those are not UTC and
-            // must keep their literal value (parse with plain new Date()).
+            // the viewer's own timezone. meeting_date is stored as naive UTC too
+            // (src/utils/dates.py, #320), so it uses this as well. Do NOT use it
+            // for wall-clock event times, which are not UTC.
             const parseServerInstant = (s) => {
                 if (s == null) return new Date(NaN);
                 if (typeof s === 'string' && /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(s) && !/(?:Z|[+-]\d{2}:?\d{2})$/.test(s)) {
@@ -1979,7 +2059,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (isNaN(date.getTime())) {
                         return dateString;
                     }
-                    return date.toLocaleDateString(undefined, {
+                    return date.toLocaleDateString(window.i18n?.getIntlLocale?.(), {
                         year: 'numeric', month: 'short', day: 'numeric',
                         hour: '2-digit', minute: '2-digit'
                     });
@@ -2004,9 +2084,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const now = new Date();
                     const isCurrentYear = date.getFullYear() === now.getFullYear();
                     if (isCurrentYear) {
-                        return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+                        return date.toLocaleDateString(window.i18n?.getIntlLocale?.(), { month: 'short', day: 'numeric' });
                     }
-                    return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+                    return date.toLocaleDateString(window.i18n?.getIntlLocale?.(), { year: 'numeric', month: 'short', day: 'numeric' });
                 } catch (e) {
                     return dateString;
                 }
@@ -2069,19 +2149,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (!dateString) return '';
                 const date = new Date(dateString);
                 if (timeOnly) {
-                    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    return date.toLocaleTimeString(window.i18n?.getIntlLocale?.(), { hour: '2-digit', minute: '2-digit' });
                 }
-                return date.toLocaleString([], {
+                return date.toLocaleString(window.i18n?.getIntlLocale?.(), {
                     weekday: 'short', month: 'short', day: 'numeric',
                     hour: '2-digit', minute: '2-digit'
                 });
             };
 
-            // Date helper functions. meeting_date is a calendar day (parse local,
-            // no tz shift); created_at is a UTC instant (parseServerInstant).
+            // Date helper functions. meeting_date and created_at are both naive
+            // UTC instants, so the sidebar groups by the same local day the
+            // label shows (#412: meeting_date was parsed as local, so a
+            // recording near midnight was labelled one day and filed under another).
             const getDateForSorting = (recording) => {
                 if (sortBy.value === 'meeting_date' && recording.meeting_date) {
-                    return new Date(recording.meeting_date);
+                    return parseServerInstant(recording.meeting_date);
                 }
                 return recording.created_at ? parseServerInstant(recording.created_at) : null;
             };
@@ -2225,7 +2307,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     const simpleSegments = transcriptionData.map(segment => ({
                         speakerId: segment.speaker,
-                        speaker: speakerMap.value[segment.speaker]?.name || segment.speaker,
+                        speaker: segment.speaker,
                         sentence: segment.sentence,
                         // Use nullish coalescing so a real 0 (recording's first segment)
                         // is preserved rather than falling through to segment.startTime.
@@ -2300,7 +2382,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         simpleSegmentRuns: simpleSegmentRuns,
                         bubbleRows: bubbleRows,
                         speakers: speakers.map(speaker => ({
-                            name: speakerMap.value[speaker]?.name || speaker,
+                            name: speaker,
                             color: speakerColors[speaker]
                         }))
                     };
@@ -2352,7 +2434,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (currentSpeakerId && currentText.trim()) {
                                 segments.push({
                                     speakerId: currentSpeakerId,
-                                    speaker: speakerMap.value[currentSpeakerId]?.name || currentSpeakerId,
+                                    speaker: currentSpeakerId,
                                     sentence: currentText.trim(),
                                     color: speakerColors[currentSpeakerId] || 'speaker-color-1'
                                 });
@@ -2374,7 +2456,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (currentSpeakerId && currentText.trim()) {
                         segments.push({
                             speakerId: currentSpeakerId,
-                            speaker: speakerMap.value[currentSpeakerId]?.name || currentSpeakerId,
+                            speaker: currentSpeakerId,
                             sentence: currentText.trim(),
                             color: speakerColors[currentSpeakerId] || 'speaker-color-1'
                         });
@@ -2418,7 +2500,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         simpleSegments: simpleSegments,
                         bubbleRows: bubbleRows,
                         speakers: speakerList.map(speaker => ({
-                            name: speakerMap.value[speaker]?.name || speaker,
+                            name: speaker,
                             color: speakerColors[speaker] || 'speaker-color-1'
                         }))
                     };
@@ -2528,8 +2610,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             const modalsComposable = useModals(state, utils);
             const sharingComposable = useSharing(state, utils);
             const transcriptionComposable = useTranscription(state, utils);
+            const findReplaceComposable = useFindReplace(state, utils);
             const chatComposable = useChat(state, utils);
             const pwaComposable = usePWA(state, utils);
+            const notificationsComposable = useNotifications(state, utils);
             const tagsComposable = useTags({
                 recordings,
                 availableTags,
@@ -2574,7 +2658,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 startReprocessingPoll: reprocessComposable.startReprocessingPoll,
                 t,
                 finalizeRecordingMerge: audioComposable.finalizeRecordingMerge,
-                fetchRecordingsPage: recordingsComposable.fetchRecordingsPage
+                fetchRecordingsPage: recordingsComposable.fetchRecordingsPage,
+                searchQuery,
+                showArchivedRecordings
             });
 
             // Bridge merge-modal openers to the audio composable so the
@@ -2590,14 +2676,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             // =========================================================================
             // Create a computed ref for the segments array
             const transcriptSegments = computed(() => processedTranscription.value.simpleSegments || []);
-
-            // Virtual scroll for speaker modal transcript (main performance bottleneck)
-            const speakerModalVirtualScroll = useVirtualScroll({
-                items: transcriptSegments,
-                itemHeight: 52,  // Approximate height of each segment row
-                containerRef: speakerModalTranscriptRef,
-                overscan: 8
-            });
 
             // Virtual scroll for main transcription panel
             const mainTranscriptVirtualScroll = useVirtualScroll({
@@ -2688,42 +2766,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                     asrEditorRef.value.scrollTop = scrollTop;
                 }
             };
-            utils.resetSpeakerModalScroll = () => {
-                if (speakerModalTranscriptRef.value) {
-                    speakerModalTranscriptRef.value.scrollTop = 0;
-                }
-            };
-            // Compute the visible segment range from the DOM rather than
-            // from a virtual scroller. Walks the rendered segments inside
-            // the speaker modal's transcript container, comparing each
-            // element's bounding rect to the container's; returns the
-            // [start, end) range of segment indices currently in view.
-            // Used by speakers.js to decide whether the highlighted
-            // speaker's nearest group is already visible (and we can skip
-            // the scroll). O(n) walk; only called when the user picks a
-            // new speaker to highlight, not on every scroll event.
-            utils.getSpeakerModalVisibleRange = () => {
-                const container = speakerModalTranscriptRef.value;
-                if (!container) return null;
-                const segments = container.querySelectorAll('[data-segment-index]');
-                if (!segments.length) return { start: 0, end: 0 };
-                const cTop = container.getBoundingClientRect().top;
-                const cBottom = cTop + container.clientHeight;
-                let start = -1, end = 0;
-                for (const el of segments) {
-                    const r = el.getBoundingClientRect();
-                    if (r.bottom < cTop) continue;          // above viewport
-                    if (r.top > cBottom) break;             // below viewport (segments are in document order)
-                    const idx = parseInt(el.dataset.segmentIndex, 10);
-                    if (Number.isNaN(idx)) continue;
-                    if (start === -1) start = idx;
-                    end = idx + 1;
-                }
-                return start === -1 ? { start: 0, end: 0 } : { start, end };
-            };
-
             // Speakers composable needs processedTranscription and scrollToSegmentIndex
             const speakersComposable = useSpeakers(state, utils, processedTranscription);
+            const speakerModalComposable = useSpeakerModal(state, utils);
+
+            // Recording ids in the order the sidebar shows them, for
+            // Shift-click span selection.
+            const visibleRecordingIds = computed(() =>
+                groupedRecordings.value.flatMap(group => group.items.map(r => r.id)));
 
             const groupedRecordings = computed(() => {
                 const groups = {};
@@ -3256,6 +3306,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
 
                     // Prefer active jobs over completed/failed
+                    // A merge job (joining uploaded files, or merging recordings)
+                    // runs in the transcription queue but is not transcribing yet.
+                    const isJoining = job.job_type === 'merge' && unifiedStatus === 'transcribing';
                     if (!existing || ['queued', 'transcribing', 'summarizing'].includes(unifiedStatus)) {
                         items.set(key, {
                             id: key,
@@ -3264,8 +3317,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                             clientId: null,
                             title: job.recording_title || 'Untitled',
                             status: unifiedStatus,
-                            progress: unifiedStatus === 'transcribing' ? 50 : (unifiedStatus === 'summarizing' ? 80 : null),
+                            statusLabel: isJoining ? t('progressQueue.joining') : null,
+                            progress: isJoining ? 25 : (unifiedStatus === 'transcribing' ? 50 : (unifiedStatus === 'summarizing' ? 80 : null)),
                             progressMessage: unifiedStatus === 'queued' ? `#${job.position || '?'} in queue` :
+                                             isJoining ? t('progressQueue.joiningMessage') :
                                              unifiedStatus === 'transcribing' ? 'Transcribing audio...' :
                                              unifiedStatus === 'summarizing' ? 'Generating summary...' :
                                              unifiedStatus === 'completed' ? 'Done' : 'Failed',
@@ -3293,7 +3348,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (upload.status === 'uploading') {
                                 existing.status = 'uploading';
                                 existing.progress = upload.progress || 0;
-                                existing.progressMessage = 'Uploading...';
+                                existing.progressMessage = upload.serverProcessing ? t('progressQueue.processingOnServer') : 'Uploading...';
                                 existing.title = upload.displayName || upload.file?.name || existing.title;
                             }
                             continue;
@@ -3307,7 +3362,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     if (upload.status === 'uploading') {
                         unifiedStatus = 'uploading';
-                        progressMsg = 'Uploading...';
+                        // The bytes are sent; the server is checking and
+                        // converting the file before it answers.
+                        progressMsg = upload.serverProcessing ? t('progressQueue.processingOnServer') : 'Uploading...';
+                    } else if (upload.status === 'pending' && upload.joinWaiting) {
+                        unifiedStatus = 'queued';
+                        progressVal = 100;
+                        const waitingFor = upload.joinWaiting.total - upload.joinWaiting.received;
+                        progressMsg = waitingFor > 0
+                            ? t(waitingFor === 1 ? 'progressQueue.waitingForJoin' : 'progressQueue.waitingForJoinPlural', { count: waitingFor })
+                            : t('progressQueue.joiningMessage');
                     } else if (upload.status === 'pending') {
                         unifiedStatus = 'queued';
                         progressVal = 100;
@@ -3496,6 +3560,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return window.renderMarkdownSafe(customBanner.value);
             });
 
+            // Summary and notes of the open recording. The server's sanitized
+            // HTML is used when present; without it (a summary saved in this
+            // tab, an incognito recording) the markdown is rendered here and
+            // sanitized. The raw text is never used as HTML (#439).
+            const renderedField = (field) => {
+                const rec = selectedRecording.value;
+                if (!rec) return '';
+                if (rec[field + '_html']) return rec[field + '_html'];
+                return rec[field] ? window.renderMarkdownSafe(rec[field]) : '';
+            };
+            const summaryHtml = computed(() => renderedField('summary'));
+            const notesHtml = computed(() => renderedField('notes'));
+
             // Get tag prompt preview
             const getTagPromptPreview = (tagId) => {
                 const tag = availableTags.value.find(t => t.id == tagId);
@@ -3595,18 +3672,28 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             });
 
-            // Keep the address bar in sync with the open recording so links are
-            // shareable/bookmarkable (#301). replaceState avoids history spam;
-            // the path is only changed (query + hash preserved). Incognito (id
-            // 'incognito') and the list view map back to '/'.
-            watch(selectedRecording, (rec) => {
+            // Keep the address bar in sync with what's on screen so links are
+            // shareable/bookmarkable (#301). An open recording wins
+            // (/recordings/<id>); otherwise a lone active label filter is
+            // reflected as /label/<name>, so clicking a tag hands the user a
+            // link to that group of recordings without them having to know the
+            // URL shape. Everything else maps back to '/'. replaceState avoids
+            // history spam; the path is only changed (query + hash preserved).
+            // Incognito (id 'incognito') is not a number, so it maps to '/'.
+            const syncAddressBar = () => {
                 try {
-                    const path = (rec && typeof rec.id === 'number') ? `/recordings/${rec.id}` : '/';
+                    const rec = selectedRecording.value;
+                    const path = (rec && typeof rec.id === 'number')
+                        ? `/recordings/${rec.id}`
+                        : (labelPathForFilter(filterTags.value, availableTags.value) || '/');
                     if (window.location.pathname !== path) {
                         window.history.replaceState({}, '', path + window.location.search + window.location.hash);
                     }
                 } catch (_) { /* best-effort */ }
-            });
+            };
+
+            watch(selectedRecording, syncAddressBar);
+            watch(filterTags, syncAddressBar, { deep: true });
 
             watch(sortBy, (newValue) => {
                 localStorage.setItem('recordingsSortBy', newValue);
@@ -3614,13 +3701,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
 
             watch(showArchivedRecordings, (newValue, oldValue) => {
-                // Prevent unnecessary reloads when being set by the other watcher
                 if (newValue === oldValue) return;
+                recordingsComposable.loadRecordings(1, false, searchQuery.value);
+            });
 
-                // Reload recordings when switching between archived/normal view
-                if (showArchivedRecordings.value) {
-                    showSharedWithMe.value = false;  // Can't show both at once
-                }
+            watch(filterAudioRemoved, (newValue, oldValue) => {
+                if (newValue === oldValue) return;
+                // A filter like starred or inbox, so it combines with Shared.
                 recordingsComposable.loadRecordings(1, false, searchQuery.value);
             });
 
@@ -3629,9 +3716,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (newValue === oldValue) return;
 
                 // Reload recordings when switching to/from shared view
-                if (showSharedWithMe.value) {
-                    showArchivedRecordings.value = false;  // Can't show both at once
-                }
                 recordingsComposable.loadRecordings(1, false, searchQuery.value);
             });
 
@@ -3797,6 +3881,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 uiComposable.initializeDarkMode();
                 uiComposable.initializeColorScheme();
                 uiComposable.initializeSidebar();
+                // Start the notification badge poll. Cheap and slow; see the
+                // composable for why this is polled rather than pushed.
+                notificationsComposable.startNotificationPolling();
 
                 // PWA Web Share Target feedback (issue #285). When the user
                 // shares audio from the native share sheet, the backend
@@ -3907,6 +3994,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 } catch (_) { /* no-op: param parsing/replaceState are best-effort */ }
 
+                // ?open=shares|appearance: the header on the other pages opens
+                // these main-app dialogs by linking here.
+                let openDialogDeepLink = null;
+                try {
+                    const params = new URLSearchParams(window.location.search);
+                    const wanted = params.get('open');
+                    if (wanted === 'shares' || wanted === 'appearance') {
+                        openDialogDeepLink = wanted;
+                        params.delete('open');
+                        const qs = params.toString();
+                        window.history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : '') + window.location.hash);
+                    }
+                } catch (_) { /* best-effort */ }
+
                 // Deep link to a specific recording: /recordings/<id> (#301).
                 // Captured before load; selected once recordings are in.
                 let deepLinkRecordingId = null;
@@ -3943,18 +4044,57 @@ document.addEventListener('DOMContentLoaded', async () => {
                     setTimeout(attempt, 400);
                 };
 
+                // Deep link to a label: /label/<name>. Unlike the recording
+                // deep link this has to be resolved BEFORE the list loads —
+                // the name only becomes tag ids once the tags are in, and the
+                // filter has to be in place for the very first page fetch so
+                // the user never sees the unfiltered list flash past.
+                const deepLinkLabelName = parseLabelPath(window.location.pathname);
+
+                let labelDeepLinkResolved = false;
+                if (deepLinkLabelName) {
+                    labelDeepLinkPending.value = true;
+                    await recordingsComposable.loadTags();
+                    labelDeepLinkResolved = recordingsComposable.filterByLabelName(deepLinkLabelName);
+                    if (labelDeepLinkResolved) {
+                        // Applying the filter also wakes the filterTags ->
+                        // searchQuery watchers, which queue a debounced
+                        // re-search. Let them run, then drop the timer: the
+                        // load below already carries the filter, so a second
+                        // identical fetch 300ms later is pure waste.
+                        await nextTick();
+                        clearTimeout(searchDebounceTimer.value);
+                    } else {
+                        labelDeepLinkPending.value = false;
+                    }
+                }
+
                 // Load initial data
                 await Promise.all([
-                    recordingsComposable.loadRecordings(),
-                    recordingsComposable.loadTags(),
+                    recordingsComposable.loadRecordings(1, false, searchQuery.value),
+                    ...(deepLinkLabelName ? [] : [recordingsComposable.loadTags()]),
                     recordingsComposable.loadFolders(),
                     recordingsComposable.loadSpeakers(),
                     loadTokenBudget()
                 ]);
 
+                // The viewer has no label by that name (wrong case is fine,
+                // a typo or someone else's private tag is not). Say so rather
+                // than let an unfiltered list masquerade as the label's
+                // contents, and drop the dead path from the address bar.
+                if (deepLinkLabelName && !labelDeepLinkResolved) {
+                    showToast(`No label named "${deepLinkLabelName}"`, 'fa-tag', 4000, 'error');
+                    syncAddressBar();
+                }
+
                 // Now open the upload modal. The pending flag (set above)
                 // prevents the auto-selected recording's selectRecording() from
                 // closing it once its fetch resolves.
+                if (openDialogDeepLink === 'shares') {
+                    sharingComposable.openSharesList();
+                } else if (openDialogDeepLink === 'appearance') {
+                    uiComposable.openColorSchemeModal();
+                }
                 if (wantUploadDeepLink) {
                     await nextTick();
                     uiComposable.switchToUploadView();
@@ -3995,7 +4135,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         customBanner.value = config.custom_banner || '';
                         canDeleteRecordings.value = config.can_delete_recordings !== false;
                         enableInternalSharing.value = config.enable_internal_sharing === true;
-                        enableArchiveToggle.value = config.enable_archive_toggle === true;
+                        enableAudioRemovedFilter.value = config.enable_audio_removed_filter === true;
                         showUsernamesInUI.value = config.show_usernames_in_ui === true;
                         enableIncognitoMode.value = config.enable_incognito_mode === true;
                         foldersEnabled.value = config.enable_folders === true;
@@ -4279,10 +4419,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ...state,
 
                 // Computed
+                summaryHtml,
+                notesHtml,
                 isMobileScreen,
                 isMobileDevice,
                 processedTranscription,
                 groupedRecordings,
+                visibleRecordingIds,
                 filteredAvailableTags,
                 filteredTagsForFilter,
                 filteredSpeakersForFilter,
@@ -4341,6 +4484,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 // Utilities
                 formatFileSize,
+                formatPercent,
+                formatNumber,
+                // The interface locale for toLocale*String calls in templates (#480)
+                uiLocale: () => window.i18n?.getIntlLocale?.(),
                 parseServerInstant,
                 formatDisplayDate,
                 formatShortDate,
@@ -4372,10 +4519,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 mainTranscriptRef,
                 asrEditorRef,
                 asrEditorSaveFlash,
-                speakerModalVisibleSegments: speakerModalVirtualScroll.visibleItems,
-                speakerModalSpacerBefore: speakerModalVirtualScroll.spacerBefore,
-                speakerModalSpacerAfter: speakerModalVirtualScroll.spacerAfter,
-                onSpeakerModalScroll: speakerModalVirtualScroll.onScroll,
                 mainTranscriptVisibleSegments: mainTranscriptVirtualScroll.visibleItems,
                 mainTranscriptSpacerBefore: mainTranscriptVirtualScroll.spacerBefore,
                 mainTranscriptSpacerAfter: mainTranscriptVirtualScroll.spacerAfter,
@@ -4402,11 +4545,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ...uploadComposable,
                 ...audioComposable,
                 ...uiComposable,
+                ...notificationsComposable,
                 ...modalsComposable,
                 ...sharingComposable,
                 ...reprocessComposable,
                 ...transcriptionComposable,
+                ...findReplaceComposable,
                 ...speakersComposable,
+                ...speakerModalComposable,
                 ...chatComposable,
                 ...tagsComposable,
                 ...foldersComposable,

@@ -25,8 +25,14 @@ class User(db.Model, UserMixin):
     recordings = db.relationship('Recording', backref='owner', lazy=True)
     transcription_language = db.Column(db.String(10), nullable=True)  # For ISO 639-1 codes
     output_language = db.Column(db.String(50), nullable=True)  # For full language names like "Spanish"
+    # IANA timezone for text the server writes (titles from naming templates) (#412).
+    # timezone_mode 'auto': the browser's zone is saved as the user visits;
+    # 'fixed': chosen in Account settings. See src/utils/timezones.py.
+    timezone = db.Column(db.String(64), nullable=True)
+    timezone_mode = db.Column(db.String(8), nullable=True, default='auto')
     ui_language = db.Column(db.String(10), nullable=True, default='en')  # For UI language preference (en, es, fr, zh)
     summary_prompt = db.Column(db.Text, nullable=True)
+    title_prompt = db.Column(db.Text, nullable=True)  # Instructions for AI titles (#400)
     extract_events = db.Column(db.Boolean, default=False)  # Enable event extraction from transcripts
     # Inquire content availability (agentic inquire). Transcripts are always
     # available; summaries/notes are optional. NULL = use the admin env
@@ -48,6 +54,9 @@ class User(db.Model, UserMixin):
     # Transcription budget in seconds (None = unlimited)
     monthly_transcription_budget = db.Column(db.Integer, nullable=True)
 
+    # Storage quota in megabytes (None = unlimited, #413)
+    storage_quota_mb = db.Column(db.Integer, nullable=True)
+
     # Email verification fields
     email_verified = db.Column(db.Boolean, default=False)
     email_verification_token = db.Column(db.String(200), nullable=True, index=True)
@@ -56,6 +65,11 @@ class User(db.Model, UserMixin):
     # Password reset fields
     password_reset_token = db.Column(db.String(200), nullable=True, index=True)
     password_reset_sent_at = db.Column(db.DateTime, nullable=True)
+
+    # Email notifications for finished processing (#386). Opt-in: mail nobody
+    # asked for is worse than no mail at all, so this defaults off and the
+    # sender additionally requires working SMTP and a deliverable address.
+    notify_email_on_completion = db.Column(db.Boolean, default=False)
 
     # Auto speaker labelling settings
     auto_speaker_labelling = db.Column(db.Boolean, default=False)  # Enable auto-labelling when voice confidence exceeds threshold
@@ -87,6 +101,9 @@ class User(db.Model, UserMixin):
     summary_include_timestamps = db.Column(db.Boolean, default=False)
     summary_timestamp_template_id = db.Column(db.Integer, db.ForeignKey('transcript_template.id', ondelete='SET NULL'), nullable=True)
     chat_include_timestamps = db.Column(db.Boolean, default=False)
+    # Give the summarizer the owner's notes on the recording (#440). Off by
+    # default, so existing summaries are generated as before.
+    summary_include_notes = db.Column(db.Boolean, default=False)
     chat_timestamp_template_id = db.Column(db.Integer, db.ForeignKey('transcript_template.id', ondelete='SET NULL'), nullable=True)
 
     # UI/display preferences
@@ -95,11 +112,29 @@ class User(db.Model, UserMixin):
     # Speaker-count entry mode in transcription UIs: 'range' (min/max)
     # or 'single' (one count, stored as min == max). Null means 'range' (#362).
     speaker_count_mode = db.Column(db.String(10), nullable=True)
+    # Light/dark mode and color scheme chosen in the app (D#419). Null until
+    # the user changes them; until then each browser keeps its own setting.
+    theme_dark_mode = db.Column(db.Boolean, nullable=True)
+    theme_color_scheme = db.Column(db.String(16), nullable=True)
     # Audio player placement in the recording-detail view. 'bottom'
     # (default) keeps the player anchored under the content columns;
     # 'top' renders it above the columns so it sits closer to the
     # title bar. User-configurable from the Display tab in settings.
     audio_player_position = db.Column(db.String(10), default='bottom')
+    # Raised when the password is set (#437), which signs the account out of
+    # every browser: the login id that Flask-Login keeps in the session and
+    # the remember-me cookie carries it, and an id with an older value is
+    # refused. Null and 0 keep the plain id, so sign-ins made before the
+    # column existed stay valid until the password is next set.
+    session_version = db.Column(db.Integer, nullable=True, default=0)
+
+    def get_id(self):
+        version = self.session_version or 0
+        return f"{self.id}:{version}" if version else str(self.id)
+
+    def end_all_sessions(self):
+        """Sign the account out of every browser (see session_version)."""
+        self.session_version = (self.session_version or 0) + 1
 
     def __repr__(self):
         return f"User('{self.username}', '{self.email}')"
@@ -146,6 +181,11 @@ class Speaker(db.Model):
     embeddings_history = db.Column(db.JSON, nullable=True)  # List of metadata: [{recording_id, timestamp, similarity}, ...]
     embedding_count = db.Column(db.Integer, default=0)  # Number of embeddings collected
     confidence_score = db.Column(db.Float, nullable=True)  # 0-1 score based on embedding consistency
+    # Contact details the owner gives a speaker (mailr spec G6). Personal data
+    # of a third party: shown to the speaker's owner only.
+    email = db.Column(db.String(320), nullable=True)
+    aliases = db.Column(db.Text, nullable=True)  # JSON list of other names
+    updated_at = db.Column(db.DateTime, nullable=True, onupdate=datetime.utcnow)
 
     # Relationship to user
     user = db.relationship('User', backref=db.backref('speakers', lazy=True, cascade='all, delete-orphan'))

@@ -31,7 +31,7 @@ async function frameSidebar(page, title) {
 }
 
 /** Open a recording and park the sidebar so `anchor` is its first row. */
-async function openWithSidebar(page, title, anchor) {
+export async function openWithSidebar(page, title, anchor) {
     await openRecordingByTitle(page, title);
     await frameSidebar(page, anchor || title);
     await settle(page, 400);
@@ -134,6 +134,24 @@ async function frameChat(page) {
 }
 
 /** Drag the floating chat panel by its header so its top-left lands at x,y. */
+/**
+ * Fit the floating chat to the right-hand column and put it in the
+ * bottom-right corner of the content area, where the app opens it.
+ */
+async function anchorChatInRightColumn(page, height = 560) {
+    const geo = await page.evaluate(() => {
+        const cols = document.getElementById('mainContentColumns');
+        const right = document.getElementById('rightMainColumn');
+        if (!cols || !right) return null;
+        const c = cols.getBoundingClientRect(), r = right.getBoundingClientRect();
+        return { right: c.right, bottom: c.bottom, width: r.width };
+    });
+    if (!geo) throw new Error('Content columns not found');
+    const w = Math.round(geo.width - 32);
+    await resizeChatPanel(page, w, height);
+    await moveChatPanel(page, Math.round(geo.right - w - 16), Math.round(geo.bottom - height - 16));
+}
+
 async function moveChatPanel(page, x, y) {
     const header = page.locator('.floating-chat-header').first();
     const box = await header.boundingBox();
@@ -236,17 +254,17 @@ async function withTokenBudget(page, fallbackBudget, body) {
 const R = {
     // Chromium ships without the proprietary H.264/AAC decoders, so the video
     // shot has to use one of the library's WebM recordings.
-    video: 'SEC/Data Science Team Updates and Announcements',
+    video: 'Ford Recalls Engineers to Train AI System',
     player: 'Attempting a Michelin Star Dish Challenge',
     follow: 'Job Cuts, Internet Regulations, and Apple Subscriptions',
     edit: 'Fortnightly Team Meeting at ABC Manufacturing',
     chat: 'Job Cuts, Internet Regulations, and Apple Subscriptions',
-    tokens: 'Road Trip Reflections and Future Research Plans',
+    tokens: 'SEC Disgorgement Limits and Investor Harm',
     nextSteps: 'Fortnightly Team Meeting at ABC Manufacturing',
     reprocess: 'SEC Disgorgement Limits and Investor Harm',
 };
 
-const ANCHOR = {
+export const ANCHOR = {
     learning: 'German Listening Practice: Meeting New People',
     interviews: 'Art, Jiu-Jitsu, and Creative Processes',
     work: 'Collaborative Approaches in Team Management',
@@ -273,7 +291,7 @@ export default [
                 throw new Error('Show video button not found (not a video recording?)');
             }
             await settle(page, 600);
-            await playToTime(page, 620);
+            await playToTime(page, 30);
             // The docked video is a muted follower kept in step by
             // syncDockVideo(); wait until it actually has a frame decoded.
             await page.waitForFunction(() => {
@@ -346,10 +364,9 @@ export default [
             await clickVisible(page, '.tab:has-text("Notes")');
             await settle(page, 400);
             await openChat(page);
-            await resizeChatPanel(page, 600, 540);
-            await moveChatPanel(page, 348, 460);
+            await anchorChatInRightColumn(page);
             await askChat(page, 'In two or three sentences, what did the hosts say about Apple charging $240 a year for device insurance?');
-            await moveChatPanel(page, 348, 460);
+            await anchorChatInRightColumn(page);
             await frameChat(page);
         },
     },
@@ -412,9 +429,11 @@ export default [
             await openWithSidebar(page, R.reprocess, ANCHOR.sec);
             // Opens the confirmation dialog only — reprocessing is never
             // started, so no LLM call is made and no data changes.
-            if (!(await clickVisible(page, 'button[title="Reprocess summary"]'))) {
-                throw new Error('Reprocess summary button not found');
+            // The header's Reprocess menu: transcription, summary, reset.
+            if (!(await clickVisible(page, '[data-header-reprocess-menu] > button'))) {
+                throw new Error('Reprocess menu not found');
             }
+            await page.locator('[data-header-reprocess-menu] [role="menuitem"]:visible').nth(1).click();
             await page.waitForSelector('.modal-overlay', { state: 'visible' });
             await settle(page, 800);
         },

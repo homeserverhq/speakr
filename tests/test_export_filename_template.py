@@ -6,7 +6,7 @@ Covers:
   - Filesystem-unsafe characters are stripped, whitespace collapsed
   - Case-insensitive collisions with another recording's stored name append _{id}
   - Re-export writes to the stored (authoritative) filename
-  - mark_export_as_deleted renames the stored name (incl. after row deletion)
+  - mark_export_as_deleted removes the stored file (incl. after row deletion)
   - POST /api/export/apply-filename-template renames on disk + updates DB
   - Unauthenticated requests to the rename endpoint are rejected
   - POST /account validation for the template setting
@@ -17,6 +17,7 @@ SHARED-DB: every assertion is scoped to the user/recordings the test created.
 """
 
 import os
+import pytest
 import shutil
 import sys
 import tempfile
@@ -48,7 +49,7 @@ app.config["WTF_CSRF_ENABLED"] = False
 def _mk_user(prefix="xf", template=None):
     suffix = uuid.uuid4().hex[:8]
     user = User(
-        username=f"{prefix}_{suffix}",
+        username=f"{prefix[:11]}_{suffix}",
         email=f"{prefix}_{suffix}@local.test",
         password="x",
         export_filename_template=template,
@@ -124,17 +125,21 @@ def test_custom_template_renders_variables():
         )
 
 
+@pytest.fixture(autouse=True)
+def _utc_default_timezone():
+    """Export dates use the owner's zone, else the admin default (#412). Pin
+    the default to UTC so these tests do not depend on the instance setting."""
+    from unittest.mock import patch
+    with patch("src.utils.timezones.deployment_timezone", return_value="UTC"):
+        yield
+
+
 def test_date_variables_fall_back_to_created_at():
     with app.app_context():
-        from src.utils.dates import to_local
         user = _mk_user(template="{{year}}-{{month}}-{{day}} {{time}}")
         rec = _mk_recording(user, meeting_date=None,
                             created_at=datetime(2024, 12, 31, 23, 5))
-        # Without a meeting_date the filename falls back to created_at, which is
-        # stored as naive UTC and localized for user-facing output.
-        local = to_local(rec.created_at)
-        expected = f"{local.year:04d}-{local.month:02d}-{local.day:02d} {local.hour:02d}-{local.minute:02d}"
-        assert render_export_filename(rec, user) == expected
+        assert render_export_filename(rec, user) == "2024-12-31 23-05"
 
 
 def test_unsafe_characters_are_stripped():

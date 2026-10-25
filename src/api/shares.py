@@ -15,9 +15,12 @@ from flask_login import login_required, current_user
 from werkzeug.exceptions import HTTPException
 
 from src.database import db
-from src.models import Recording, Share, InternalShare, SharedRecordingState, User, TranscriptChunk, ShareAuditLog
+from src.models import Recording, Share, InternalShare, SharedRecordingState, User, TranscriptChunk, ShareAuditLog, Folder
 from src.utils import md_to_html
 from src.services.storage import get_storage_service
+from src.services.public_shares import active_share_or_404
+from src.utils.mime import served_media_mime, sandbox_media_response
+from src.utils.search import LIKE_ESCAPE, contains_pattern
 
 # Configuration from environment
 ENABLE_PUBLIC_SHARING = os.environ.get('ENABLE_PUBLIC_SHARING', 'true').lower() == 'true'
@@ -122,7 +125,7 @@ def process_transcription_for_template(transcription_str):
 @shares_bp.route('/share/<string:public_id>', methods=['GET'])
 def view_shared_recording(public_id):
     """View a publicly shared recording."""
-    share = Share.query.filter_by(public_id=public_id).first_or_404()
+    share = active_share_or_404(public_id)
     recording = share.recording
 
     # Process transcription for server-side rendering (only if READABLE_PUBLIC_LINKS is enabled)
@@ -154,14 +157,15 @@ def view_shared_recording(public_id):
 def get_shared_audio(public_id):
     """Serve audio file for a publicly shared recording."""
     try:
-        share = Share.query.filter_by(public_id=public_id).first_or_404()
+        share = active_share_or_404(public_id)
         recording = share.recording
         if not recording or not recording.audio_path:
             return jsonify({'error': 'Recording or audio file not found'}), 404
+        serve_mime = served_media_mime(recording.mime_type, recording.audio_path)
         delivery = get_storage_service().get_audio_delivery(
             recording.audio_path,
             download=False,
-            mime_type=recording.mime_type,
+            mime_type=serve_mime,
             download_name=recording.original_filename,
             is_public=True,
         )
@@ -170,7 +174,7 @@ def get_shared_audio(public_id):
         if not delivery.local_path or not os.path.exists(delivery.local_path):
             current_app.logger.error(f"Audio file missing from server: {recording.audio_path}")
             return jsonify({'error': 'Audio file missing from server'}), 404
-        return send_file(delivery.local_path, mimetype=(recording.mime_type or delivery.mimetype), conditional=True)
+        return sandbox_media_response(send_file(delivery.local_path, mimetype=serve_mime, conditional=True))
     except HTTPException:
         # Let first_or_404() (and any other HTTP error) keep its real status —
         # an unknown public_id must stay a 404, not be masked as a 500.
@@ -232,38 +236,19 @@ def create_share(recording_id):
     share_notes = data.get('share_notes', True)
     force_new = data.get('force_new', False)
 
-    # Check if ANY share already exists for this recording by this user
-    existing_share = Share.query.filter_by(
-        recording_id=recording.id,
-        user_id=current_user.id
-    ).order_by(Share.created_at.desc()).first()
-
-    if existing_share and not force_new:
-        # Update the share permissions if they've changed
-        if existing_share.share_summary != share_summary or existing_share.share_notes != share_notes:
-            existing_share.share_summary = share_summary
-            existing_share.share_notes = share_notes
-            db.session.commit()
-
-        # Return existing share info
-        share_url = url_for('shares.view_shared_recording', public_id=existing_share.public_id, _external=True)
+    # The web dialog sets the flags of a reused link to what it sent.
+    from src.services.public_shares import get_or_create
+    share, created, _ = get_or_create(recording, current_user, share_summary, share_notes,
+                                      force_new=force_new, update_existing=True)
+    if not created:
+        share_url = url_for('shares.view_shared_recording', public_id=share.public_id, _external=True)
         return jsonify({
             'success': True,
             'share_url': share_url,
-            'share': existing_share.to_dict(),
+            'share': share.to_dict(),
             'existing': True,
             'message': 'Using existing share link for this recording'
         }), 200
-
-    # Create new share
-    share = Share(
-        recording_id=recording.id,
-        user_id=current_user.id,
-        share_summary=share_summary,
-        share_notes=share_notes
-    )
-    db.session.add(share)
-    db.session.commit()
 
     share_url = url_for('shares.view_shared_recording', public_id=share.public_id, _external=True)
 
@@ -281,6 +266,99 @@ def get_shares():
     """Get all public shares for the current user."""
     shares = Share.query.filter_by(user_id=current_user.id).order_by(Share.created_at.desc()).all()
     return jsonify([share.to_dict() for share in shares])
+
+
+@shares_bp.route('/api/shares/overview', methods=['GET'])
+@login_required
+def get_shares_overview():
+    """Everything the Shared Transcripts list shows (#416).
+
+    The list predates internal sharing and showed public links only. It now
+    has what the user shared (public links, and recordings shared with people
+    and groups) and what was shared with them.
+
+    The recordings, users, source tags and source folders of the shares are
+    read once per list (D#483), with only the recording columns shown here.
+    """
+    from sqlalchemy.orm import joinedload, load_only, selectinload
+    folders = {}
+
+    def _source(share):
+        if share.source_type == 'group_tag' and share.source_tag is not None:
+            return {'type': 'group_tag', 'name': share.source_tag.name}
+        if share.source_type == 'group_folder' and share.source_folder_id:
+            folder = folders.get(share.source_folder_id)
+            return {'type': 'group_folder', 'name': folder.name if folder else None}
+        return {'type': 'manual', 'name': None}
+
+    def _internal(*criteria):
+        shares = (InternalShare.query.filter(*criteria)
+                  .options(selectinload(InternalShare.recording).load_only(
+                               Recording.id, Recording.title, Recording.original_filename, Recording.status),
+                           joinedload(InternalShare.shared_with), joinedload(InternalShare.owner),
+                           joinedload(InternalShare.source_tag))
+                  .order_by(InternalShare.created_at.desc(), InternalShare.id.desc()).all())
+        wanted = {s.source_folder_id for s in shares
+                  if s.source_type == 'group_folder' and s.source_folder_id and s.source_folder_id not in folders}
+        if wanted:
+            folders.update({f.id: f for f in Folder.query.filter(Folder.id.in_(sorted(wanted)))})
+        return shares
+
+    public_links = [s.to_dict() for s in
+                    Share.query.filter_by(user_id=current_user.id)
+                    .options(selectinload(Share.recording).load_only(
+                        Recording.id, Recording.title, Recording.audio_deleted_at))
+                    .order_by(Share.created_at.desc(), Share.id.desc()).all()]
+    shared_by_me, shared_with_me = [], []
+    if ENABLE_INTERNAL_SHARING:
+        by_recording = {}
+        for share in _internal(InternalShare.owner_id == current_user.id):
+            recording = share.recording
+            if recording is None:
+                continue
+            entry = by_recording.setdefault(recording.id, {
+                'recording_id': recording.id,
+                'recording_title': recording.title or recording.original_filename or f'#{recording.id}',
+                'recipients': [],
+            })
+            source = _source(share)
+            entry['recipients'].append({
+                'share_id': share.id,
+                'user_id': share.shared_with_user_id,
+                'username': share.shared_with.username if share.shared_with else None,
+                'can_edit': bool(share.can_edit),
+                'can_reshare': bool(share.can_reshare),
+                'source': source,
+                # A group share follows its tag or folder; removing the tag or
+                # folder ends it, so only a manual share is revoked here.
+                'revocable': source['type'] == 'manual',
+                'created_at': share.created_at.isoformat() if share.created_at else None,
+            })
+        shared_by_me = list(by_recording.values())
+
+        for share in _internal(InternalShare.shared_with_user_id == current_user.id):
+            recording = share.recording
+            if recording is None:
+                continue
+            shared_with_me.append({
+                'share_id': share.id,
+                'recording_id': recording.id,
+                'recording_title': recording.title or recording.original_filename or f'#{recording.id}',
+                'owner_username': share.owner.username if SHOW_USERNAMES_IN_UI and share.owner else None,
+                'can_edit': bool(share.can_edit),
+                'can_reshare': bool(share.can_reshare),
+                'source': _source(share),
+                'status': recording.status,
+                'created_at': share.created_at.isoformat() if share.created_at else None,
+            })
+
+    return jsonify({
+        'public_sharing_enabled': ENABLE_PUBLIC_SHARING,
+        'internal_sharing_enabled': ENABLE_INTERNAL_SHARING,
+        'public_links': public_links,
+        'shared_by_me': shared_by_me,
+        'shared_with_me': shared_with_me,
+    })
 
 
 @shares_bp.route('/api/share/<int:share_id>', methods=['PUT'])
@@ -304,8 +382,8 @@ def update_share(share_id):
 def delete_share(share_id):
     """Delete a public share."""
     share = Share.query.filter_by(id=share_id, user_id=current_user.id).first_or_404()
-    db.session.delete(share)
-    db.session.commit()
+    from src.services.public_shares import revoke
+    revoke(share)
     return jsonify({'success': True})
 
 
@@ -331,7 +409,7 @@ def search_users():
             # If usernames are shown, allow partial match (autocomplete)
             users = User.query.filter(
                 User.id != current_user.id,
-                User.username.ilike(f'%{query}%')
+                User.username.ilike(contains_pattern(query), escape=LIKE_ESCAPE)
             ).limit(10).all()
         else:
             # If usernames are hidden (privacy mode), require exact match only
@@ -594,31 +672,39 @@ def get_shared_with_me():
         return jsonify({'error': 'Internal sharing is not enabled'}), 403
 
     try:
-        # Get shares where current user is the recipient
-        shares = InternalShare.query.filter_by(shared_with_user_id=current_user.id).all()
+        # Get shares where current user is the recipient, with their
+        # recordings and owners, and the rows' lookups read once (D#483)
+        from sqlalchemy.orm import selectinload
+        from src.services.recording_list import RecordingListBatch, list_load_options
+        shares = InternalShare.query.filter_by(shared_with_user_id=current_user.id).options(
+            selectinload(InternalShare.recording).options(*list_load_options()),
+            selectinload(InternalShare.owner),
+        ).all()
+        listed = [s for s in shares if s.recording and s.recording.status == 'COMPLETED']
+        batch = RecordingListBatch([s.recording for s in listed], current_user,
+                                   {s.recording_id: s for s in listed})
 
         result = []
-        for share in shares:
+        for share in listed:
             recording = share.recording
-            if recording and recording.status == 'COMPLETED':
-                rec_data = recording.to_list_dict(viewer_user=current_user)
-                # Mark as shared recording with owner info
-                rec_data['is_shared'] = True
-                rec_data['owner_username'] = share.owner.username if SHOW_USERNAMES_IN_UI else None
-                # Don't show outgoing share counts for recordings you don't own
-                rec_data['shared_with_count'] = 0
-                rec_data['public_share_count'] = 0
-                # Check if recording has group tags (among visible tags)
-                visible_tags = recording.get_visible_tags(current_user)
-                rec_data['has_group_tags'] = any(tag.is_group_tag for tag in visible_tags) if visible_tags else False
-                rec_data['share_info'] = {
-                    'share_id': share.id,
-                    'owner_username': share.owner.username if SHOW_USERNAMES_IN_UI else None,
-                    'can_edit': share.can_edit,
-                    'can_reshare': share.can_reshare,
-                    'shared_at': share.created_at.isoformat()
-                }
-                result.append(rec_data)
+            rec_data = recording.to_list_dict(viewer_user=current_user, batch=batch)
+            # Mark as shared recording with owner info
+            rec_data['is_shared'] = True
+            rec_data['owner_username'] = share.owner.username if SHOW_USERNAMES_IN_UI else None
+            # Don't show outgoing share counts for recordings you don't own
+            rec_data['shared_with_count'] = 0
+            rec_data['public_share_count'] = 0
+            # Check if recording has group tags (among visible tags)
+            visible_tags = batch.visible_tags(recording)
+            rec_data['has_group_tags'] = any(tag.is_group_tag for tag in visible_tags) if visible_tags else False
+            rec_data['share_info'] = {
+                'share_id': share.id,
+                'owner_username': share.owner.username if SHOW_USERNAMES_IN_UI else None,
+                'can_edit': share.can_edit,
+                'can_reshare': share.can_reshare,
+                'shared_at': share.created_at.isoformat()
+            }
+            result.append(rec_data)
 
         return jsonify(result)
 

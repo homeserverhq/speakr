@@ -24,6 +24,12 @@ When Speakr starts successfully but you can't reach the web interface, network c
 
 Firewall rules often block access, especially on cloud servers. Ensure port 8899 is open in your firewall, security groups (AWS), or network policies. If accessing from another machine, remember that `localhost` won't work - use the server's actual IP address or hostname.
 
+### Actions Fail Behind a Reverse Proxy with a Referer or Host Error
+
+Over HTTPS, Speakr's CSRF protection requires the browser's Referer header to match the host the server receives. If every action that changes something (reprocessing, resetting a status, saving) fails with HTTP 400 and a message naming the Referer header or two different host names, the reverse proxy is the cause. The server log shows a matching `CSRF validation failed` warning with both hosts.
+
+Two proxy settings produce this. The proxy may strip the Referer header, either directly or through a `Referrer-Policy: no-referrer` header it adds; use `strict-origin-when-cross-origin` or leave the header to Speakr. Alternatively, the proxy may forward a different Host header than the address in the browser (for example the container name); forward the original Host (in Nginx, `proxy_set_header Host $host;`) or set `X-Forwarded-Host`, and set `TRUSTED_PROXY_HOPS` to the number of proxies in front of Speakr. Reloading the page does not help with either, because every request fails the same check.
+
 ### Admin Login Fails
 
 If you can't log in with your [admin credentials](getting-started.md#step-4-configure-admin-account), first verify you're using the exact username and password from your environment file. For user management issues, see the [admin guide](admin-guide/user-management.md). These are case-sensitive and must match exactly. Check the Docker logs for admin user creation messages - you should see "Admin user created successfully" during first startup.
@@ -45,6 +51,8 @@ When recordings stay in "pending" or "queued" status indefinitely, check these c
 **Network connectivity**: The container needs to reach external API endpoints. If you're behind a corporate proxy, you'll need to configure proxy settings in your Docker environment.
 
 ### Transcription Fails Immediately
+
+A failed transcription is shown in place of the transcript, with the cause, a hint and a **Reprocess transcription** button. **Technical details** opens the error message returned by the transcription service; when you report a problem, copy it with the button beside it.
 
 Quick failures usually indicate API authentication problems. Double-check your API keys in the environment file. Remember that OpenAI and OpenRouter use different key formats. OpenAI keys start with "sk-" while OpenRouter keys look different. Ensure you're using the right key for your configured service.
 
@@ -108,6 +116,10 @@ Network speed affects transcription time since audio must upload to API services
 
 The choice of transcription model impacts speed. Whisper Large is more accurate but slower than Whisper Base. If speed matters more than perfect accuracy, consider using a smaller model through your API settings.
 
+### Slow Summaries and Titles With a Reasoning Model
+
+Models that reason before answering, such as Qwen3, GPT-5 or DeepSeek, can take many times longer than the answer alone requires, and on paid services the reasoning tokens are billed as output. Summaries and titles rarely benefit from long reasoning. Lower the reasoning effort or turn reasoning off with `TEXT_MODEL_EXTRA_BODY`, using the field your provider accepts; see [Provider-Specific Request Parameters](admin-guide/model-configuration.md#provider-specific-request-parameters). Compare the response time or the token counts in the [system statistics](admin-guide/statistics.md) before and after the change, since some local servers ignore fields they do not recognise.
+
 ### Recordings Stuck After Restart
 
 If Speakr crashed or restarted while recordings were processing, they automatically resume on next startup. The job queue persists to the database, so no uploads are lost. Check the logs for "Recovered orphaned jobs" messages confirming jobs were resumed.
@@ -159,7 +171,7 @@ Since v0.10.4-alpha the stock image runs threaded gunicorn workers (3 processes 
 
 ### Chat Responses End Mid-Sentence
 
-If a chat or Inquire response stops abruptly with a note that the output token limit was reached, the model hit the configured `CHAT_MAX_TOKENS` ceiling (default 2000). This is common with reasoning models, whose hidden reasoning tokens share the same budget as the visible answer. Ask the model to continue from where it stopped, or raise `CHAT_MAX_TOKENS` in your `.env`. Before v0.10.3-alpha these truncated responses were displayed as if they had completed normally; they are now flagged explicitly.
+If a chat or Inquire response stops abruptly with a note that the output token limit was reached, the model hit the configured `CHAT_MAX_TOKENS` ceiling (default 2000). This is common with reasoning models, whose hidden reasoning tokens share the same budget as the visible answer. Ask the model to continue from where it stopped, raise `CHAT_MAX_TOKENS` in your `.env`, or lower the model's reasoning effort with `TEXT_MODEL_EXTRA_BODY` (or `CHAT_MODEL_EXTRA_BODY` for a separate chat model), as described in [Provider-Specific Request Parameters](admin-guide/model-configuration.md#provider-specific-request-parameters). Before v0.10.3-alpha these truncated responses were displayed as if they had completed normally; they are now flagged explicitly.
 
 ### Speaker Identification Not Working
 
