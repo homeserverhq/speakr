@@ -18,9 +18,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc \
 # the dependencies of dependencies, at an exact version and checked against
 # its hash, so a new or changed release on PyPI never reaches an image
 # unnoticed. Regenerate them with scripts/lock-requirements.sh.
+#
+# The full image uses the CPU-only PyTorch wheel from the official PyTorch
+# index: PyPI's Linux torch wheel pulls NVIDIA CUDA, cuDNN, NCCL and Triton.
 COPY requirements.lock requirements-embeddings.lock ./
-RUN if [ "$LIGHTWEIGHT" = "0" ]; then LOCK=requirements-embeddings.lock; else LOCK=requirements.lock; fi && \
-    pip install --no-cache-dir --prefix=/install --require-hashes --no-deps -r "$LOCK"
+RUN if [ "$LIGHTWEIGHT" = "0" ]; then \
+        pip install --no-cache-dir --prefix=/install --require-hashes --no-deps \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            -r requirements-embeddings.lock; \
+    else \
+        pip install --no-cache-dir --prefix=/install --require-hashes --no-deps \
+            -r requirements.lock; \
+    fi
 
 # Download vendor assets (JS/CSS/fonts)
 RUN mkdir -p /app/static/vendor

@@ -24,7 +24,18 @@ done < scripts/audit-exceptions.txt
 status=0
 for lock in requirements.lock requirements-embeddings.lock; do
     echo "== $lock"
+    # Local versions such as torch==2.14.1+cpu are not on PyPI, so pip-audit
+    # would skip them. Audit the base version instead; advisories apply to the
+    # CPU wheel as well.
+    audit_lock=$lock
+    tmp_lock=
+    if grep -q '+cpu' "$lock"; then
+        tmp_lock=$(mktemp)
+        sed 's/^\(torch==[0-9][^+ ]*\)+cpu/\1/' "$lock" > "$tmp_lock"
+        audit_lock=$tmp_lock
+    fi
     # shellcheck disable=SC2086
-    pip-audit --disable-pip --require-hashes --progress-spinner off -r "$lock" $ignores || status=1
+    pip-audit --disable-pip --require-hashes --progress-spinner off -r "$audit_lock" $ignores || status=1
+    [ -z "$tmp_lock" ] || rm -f "$tmp_lock"
 done
 exit $status

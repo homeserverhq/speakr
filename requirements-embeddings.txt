@@ -1,2 +1,7 @@
 sentence-transformers==2.7.0
 huggingface-hub>=0.19.0
+
+# CPU-only PyTorch: PyPI's Linux torch wheel pulls NVIDIA CUDA, cuDNN, NCCL and
+# Triton packages. The full Speakr image is CPU-only, so use the official CPU
+# wheel on Linux; macOS and Windows PyPI wheels are already CPU-only.
+torch==2.14.1+cpu ; sys_platform == "linux"

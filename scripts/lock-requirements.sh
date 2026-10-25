@@ -44,8 +44,17 @@ docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/w -w /w \
         --universal --python-version 3.11 --generate-hashes \
         -o "$OUT"/requirements.lock "$@"
     $UV pip compile -q requirements.txt requirements-embeddings.txt -c constraints.txt \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        --index-strategy unsafe-best-match \
         --universal --python-version 3.11 --generate-hashes \
         -o "$OUT"/requirements-embeddings.lock "$@"
+    for lock in "$OUT"/requirements.lock "$OUT"/requirements-embeddings.lock; do
+        if grep -Eqi '"'"'^(nvidia-|cuda-|triton==)'"'"' "$lock"; then
+            echo "$lock contains NVIDIA/CUDA/Triton packages; Speakr images are CPU-only:" >&2
+            grep -Ei '"'"'^(nvidia-|cuda-|triton==)'"'"' "$lock" >&2 || true
+            exit 1
+        fi
+    done
     if [ "$CHECK" = "1" ]; then
         diff -u requirements.lock "$OUT"/requirements.lock && \
         diff -u requirements-embeddings.lock "$OUT"/requirements-embeddings.lock || {
